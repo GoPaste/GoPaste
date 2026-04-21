@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -440,6 +441,54 @@ func (a *App) restartApp() {
 		return
 	}
 	a.log.Info("restarting gopaste", "new_pid", cmd.Process.Pid)
-	// 退出当前进程
 	a.quitApp()
+}
+
+// RevealInExplorer 在系统文件管理器中定位并选中文件。
+func (a *App) RevealInExplorer(path string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", "/select,", path)
+	case "darwin":
+		cmd = exec.Command("open", "-R", path)
+	default:
+		// Linux: 打开所在目录
+		dir := filepath.Dir(path)
+		cmd = exec.Command("xdg-open", dir)
+	}
+	return cmd.Start()
+}
+
+// SaveImageToFile 将图片内容保存到用户选择的位置（通过系统保存对话框）。
+func (a *App) SaveImageToFile(id int64) (string, error) {
+	if a.repo == nil || a.ctx == nil {
+		return "", fmt.Errorf("not ready")
+	}
+	t, content, err := a.repo.GetItemWithContent(id)
+	if err != nil {
+		return "", err
+	}
+	if t != types.TypeImage {
+		return "", fmt.Errorf("not an image")
+	}
+
+	savePath, err := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		Title:           "保存图片",
+		DefaultFilename: fmt.Sprintf("gopaste_%d.png", id),
+		Filters: []wailsruntime.FileFilter{
+			{DisplayName: "PNG 图片", Pattern: "*.png"},
+			{DisplayName: "所有文件", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if savePath == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(savePath, content, 0o644); err != nil {
+		return "", err
+	}
+	return savePath, nil
 }

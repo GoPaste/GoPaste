@@ -10,6 +10,8 @@ import {
   GetContent,
   HideWindow,
   GetSettings,
+  RevealInExplorer,
+  SaveImageToFile,
 } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import type { types } from '../wailsjs/go/models'
@@ -31,6 +33,8 @@ import {
   Trash2,
   ArrowUp,
   AlertTriangle,
+  FolderOpen,
+  Download,
 } from 'lucide-vue-next'
 
 type Item = types.Item
@@ -156,6 +160,39 @@ async function doDelete(it: Item) {
 }
 async function doTogglePin(it: Item) { await TogglePin(it.id, !it.pinned); await refresh() }
 async function doToggleFav(it: Item) { await ToggleFavorite(it.id, !it.favorite); await refresh() }
+
+// 右键菜单
+const ctxMenu = ref<{ visible: boolean; x: number; y: number; item: Item | null }>({
+  visible: false, x: 0, y: 0, item: null
+})
+
+function onItemContextMenu(e: MouseEvent, it: Item) {
+  e.preventDefault()
+  ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, item: it }
+}
+function closeCtxMenu() { ctxMenu.value.visible = false }
+
+async function ctxCopy() { if (ctxMenu.value.item) await doCopy(ctxMenu.value.item); closeCtxMenu() }
+async function ctxPaste() { if (ctxMenu.value.item) await doPaste(ctxMenu.value.item); closeCtxMenu() }
+async function ctxFav() { if (ctxMenu.value.item) await doToggleFav(ctxMenu.value.item); closeCtxMenu() }
+async function ctxPin() { if (ctxMenu.value.item) await doTogglePin(ctxMenu.value.item); closeCtxMenu() }
+async function ctxDelete() { if (ctxMenu.value.item) await doDelete(ctxMenu.value.item); closeCtxMenu() }
+async function ctxDetail() { if (ctxMenu.value.item) await showDetail(ctxMenu.value.item); closeCtxMenu() }
+async function ctxReveal() {
+  if (!ctxMenu.value.item) return
+  // 获取文件路径（content 是换行分隔的路径）
+  try {
+    const b64 = await GetContent(ctxMenu.value.item.id)
+    const paths = atob(b64).split('\n')
+    if (paths[0]) await RevealInExplorer(paths[0])
+  } catch (e) { console.error(e) }
+  closeCtxMenu()
+}
+async function ctxSaveImage() {
+  if (!ctxMenu.value.item) return
+  try { await SaveImageToFile(ctxMenu.value.item.id) } catch (e) { console.error(e) }
+  closeCtxMenu()
+}
 
 // 主题
 const theme = ref<'dark' | 'light'>('dark')
@@ -304,7 +341,8 @@ function onWindowBlur() {
 
         <div v-for="(it, idx) in items" :key="it.id" class="item"
           :class="{ active: idx === selectedIdx, pinned: it.pinned }"
-          @click="selectedIdx = idx" @dblclick="doPaste(it)">
+          @click="selectedIdx = idx" @dblclick="doPaste(it)"
+          @contextmenu="onItemContextMenu($event, it)">
 
           <!-- 第一行：元信息 + 操作按钮 -->
           <div class="item-row1">
@@ -320,16 +358,26 @@ function onWindowBlur() {
 
           <!-- 第二行：内容预览 -->
           <div class="item-row2">
-            <!-- 图片：缩略图 + 描述 -->
+            <!-- 图片 -->
             <template v-if="it.type === 'image'">
               <div class="thumb" @click.stop="showDetail(it)">
                 <img v-if="imageThumbs[it.id]" :src="imageThumbs[it.id]" />
-                <div v-else class="thumb-ph">
-                  <ImageIcon :size="20" />
+                <div v-else class="thumb-ph"><ImageIcon :size="20" /></div>
+              </div>
+            </template>
+            <!-- 文件：文件名列表（每行一个，带图标） -->
+            <template v-else-if="it.type === 'file'">
+              <div class="file-list">
+                <div v-for="(fname, fi) in (it.preview || '').split('\n').slice(0, 5)" :key="fi" class="file-row">
+                  <FileIcon :size="14" class="file-icon" />
+                  <span class="file-name">{{ fname }}</span>
+                </div>
+                <div v-if="(it.preview || '').split('\n').length > 5" class="file-more">
+                  ...还有 {{ (it.preview || '').split('\n').length - 5 }} 个文件
                 </div>
               </div>
             </template>
-            <!-- 文本/代码/链接/文件 -->
+            <!-- 文本/代码/链接 -->
             <div v-else class="item-preview" @click.stop="showDetail(it)">{{ it.preview || '(空)' }}</div>
           </div>
         </div>
@@ -362,6 +410,35 @@ function onWindowBlur() {
     </template>
 
     <Settings v-else @close="view = 'main'" />
+
+    <!-- 右键菜单 -->
+    <Transition name="fade">
+      <div v-if="ctxMenu.visible" class="ctx-mask" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
+        <div class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
+          <button @click="ctxPaste"><Copy :size="14" /> 粘贴</button>
+          <button @click="ctxCopy"><Copy :size="14" /> 复制</button>
+          <button @click="ctxDetail"><Eye :size="14" /> 查看详情</button>
+          <div class="ctx-sep"></div>
+          <button @click="ctxFav">
+            <Star :size="14" /> {{ ctxMenu.item?.favorite ? '取消收藏' : '收藏' }}
+          </button>
+          <button @click="ctxPin">
+            <Pin :size="14" /> {{ ctxMenu.item?.pinned ? '取消置顶' : '置顶' }}
+          </button>
+          <div class="ctx-sep"></div>
+          <!-- 图片专属：保存图片 -->
+          <button v-if="ctxMenu.item?.type === 'image'" @click="ctxSaveImage">
+            <Download :size="14" /> 保存图片
+          </button>
+          <!-- 文件专属：在资源管理器中显示 -->
+          <button v-if="ctxMenu.item?.type === 'file'" @click="ctxReveal">
+            <FolderOpen :size="14" /> 在资源管理器中显示
+          </button>
+          <div class="ctx-sep"></div>
+          <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> 删除</button>
+        </div>
+      </div>
+    </Transition>
 
     <!-- 自定义确认弹窗 -->
     <Transition name="fade">
@@ -534,6 +611,33 @@ html, body, #app {
 .detail-body { padding: 14px; overflow: auto; }
 .detail-body pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; color: var(--text); }
 .detail-body img { max-width: 100%; border-radius: 6px; }
+
+/* 文件列表样式 */
+.file-list { display: flex; flex-direction: column; gap: 4px; }
+.file-row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.file-icon { color: var(--accent); flex-shrink: 0; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-more { font-size: 11px; color: var(--text-muted); padding-left: 20px; }
+
+/* 右键菜单 */
+.ctx-mask { position: fixed; inset: 0; z-index: 180; }
+.ctx-menu {
+  position: fixed; z-index: 181;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.3);
+}
+.ctx-menu button {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; background: transparent; border: none;
+  color: var(--text); padding: 7px 14px;
+  font-size: 13px; cursor: pointer; text-align: left;
+}
+.ctx-menu button:hover { background: var(--bg-hover); }
+.ctx-menu .ctx-danger { color: var(--danger); }
+.ctx-menu .ctx-danger:hover { background: rgba(239,68,68,.1); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 8px; }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 3px; }
