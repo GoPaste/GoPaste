@@ -55,22 +55,26 @@ build-win-arm: ## 构建 Windows (arm64)
 	$(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
-build-mac: ## 构建 macOS (universal)
+build-mac: ## 构建 macOS (universal) ⚠️ 需在 macOS 上运行
+	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建（Wails 限制）$(RESET)"; echo "  推荐使用 GitHub Actions: git tag v0.1.0 && git push --tags"; exit 1; fi
 	$(WAILS) build -clean -platform darwin/universal $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).app$(RESET)"
 
-build-mac-arm: ## 构建 macOS (Apple Silicon)
+build-mac-arm: ## 构建 macOS (Apple Silicon) ⚠️ 需在 macOS 上运行
+	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
 	$(WAILS) build -clean -platform darwin/arm64 $(WAILS_FLAGS)
 
-build-mac-intel: ## 构建 macOS (Intel)
+build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
+	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
 	$(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
 
 build-linux: ## 构建 Linux (amd64)
 	$(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
-build-all: build-win build-mac build-linux ## 构建全平台
-	@echo "$(GREEN)✓ All platforms built$(RESET)"
+build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac 上单独构建或用 CI）
+	@echo "$(GREEN)✓ Windows + Linux built$(RESET)"
+	@echo "$(CYAN)ℹ macOS 请在 Mac 上运行 make build-mac，或使用 GitHub Actions$(RESET)"
 
 # ============== 代码生成 ==============
 generate: ## 重新生成前端 TS 绑定 (wailsjs/)
