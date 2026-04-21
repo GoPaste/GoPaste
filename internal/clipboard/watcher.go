@@ -1,0 +1,156 @@
+// Package clipboard 提供跨平台剪切板监听能力。
+//
+// 监听文本与图片（PNG）的变更事件，并通过 channel 向上游推送捕获到的 Item（未持久化、未加密）。
+package clipboard
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"image/png"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"golang.design/x/clipboard"
+
+	"gopaste/internal/storage"
+	"gopaste/internal/types"
+)
+
+// previewLimit 文本预览最大长度（字符数）。
+const previewLimit = 200
+
+// Watcher 剪切板监听器。
+type Watcher struct {
+	out     chan types.Item
+	lastSig string
+	mu      sync.Mutex
+}
+
+// New 创建一个 Watcher。
+func New() *Watcher {
+	return &Watcher{out: make(chan types.Item, 32)}
+}
+
+// Events 返回事件通道。每次剪切板变化（去重后）会推送一个 Item。
+func (w *Watcher) Events() <-chan types.Item { return w.out }
+
+// Start 启动监听直到 ctx 结束。
+//
+// 初始化失败会返回错误（例如 Linux 缺少 xclip/xsel 或 Wayland 限制）。
+func (w *Watcher) Start(ctx context.Context) error {
+	if err := clipboard.Init(); err != nil {
+		return fmt.Errorf("clipboard: init: %w", err)
+	}
+
+	textCh := clipboard.Watch(ctx, clipboard.FmtText)
+	imageCh := clipboard.Watch(ctx, clipboard.FmtImage)
+
+	go w.loop(ctx, textCh, imageCh)
+	return nil
+}
+
+func (w *Watcher) loop(ctx context.Context, textCh, imageCh <-chan []byte) {
+	defer close(w.out)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case b, ok := <-textCh:
+			if !ok {
+				textCh = nil
+				continue
+			}
+			w.handle(typeOfText(b), b)
+		case b, ok := <-imageCh:
+			if !ok {
+				imageCh = nil
+				continue
+			}
+			w.handle(types.TypeImage, b)
+		}
+		if textCh == nil && imageCh == nil {
+			return
+		}
+	}
+}
+
+func (w *Watcher) handle(t types.ItemType, raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	hash := storage.HashBytes(raw)
+
+	w.mu.Lock()
+	if hash == w.lastSig {
+		w.mu.Unlock()
+		return
+	}
+	w.lastSig = hash
+	w.mu.Unlock()
+
+	item := types.Item{
+		Hash:      hash,
+		Type:      t,
+		Content:   raw,
+		Size:      int64(len(raw)),
+		Preview:   previewOf(t, raw),
+		CharCount: charCount(t, raw),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	select {
+	case w.out <- item:
+	default:
+		// 缓冲满则丢弃（极端场景下保护主线程）
+	}
+}
+
+// previewOf 生成用于展示和搜索的明文摘要。
+func previewOf(t types.ItemType, raw []byte) string {
+	switch t {
+	case types.TypeImage:
+		if cfg, err := png.DecodeConfig(bytes.NewReader(raw)); err == nil {
+			return fmt.Sprintf("[image] %dx%d · %.1f KB", cfg.Width, cfg.Height, float64(len(raw))/1024)
+		}
+		return fmt.Sprintf("[image] %.1f KB", float64(len(raw))/1024)
+	default:
+		s := string(raw)
+		if !utf8.ValidString(s) {
+			return fmt.Sprintf("[binary] %d bytes", len(raw))
+		}
+		s = strings.TrimSpace(s)
+		if r := []rune(s); len(r) > previewLimit {
+			s = string(r[:previewLimit])
+		}
+		return s
+	}
+}
+
+// typeOfText 粗略判别链接/代码/纯文本。
+func typeOfText(b []byte) types.ItemType {
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return types.TypeText
+	}
+	// URL
+	if u, err := url.ParseRequestURI(s); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return types.TypeLink
+	}
+	// 代码启发：包含常见符号 + 换行
+	if strings.Contains(s, "\n") && strings.ContainsAny(s, "{};=") {
+		return types.TypeCode
+	}
+	return types.TypeText
+}
+
+// charCount 返回文本字符数（图片返回 0）。
+func charCount(t types.ItemType, raw []byte) int {
+	if t == types.TypeImage {
+		return 0
+	}
+	return utf8.RuneCount(raw)
+}

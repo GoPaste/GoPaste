@@ -1,0 +1,28 @@
+# Go
+/build/bin/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Wails
+frontend/wailsjs/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+
+# Local data
+.gopaste/
+
+# Temp
+/tmp/
