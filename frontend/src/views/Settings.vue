@@ -10,7 +10,7 @@ import {
 import {
   ArrowLeft, Settings as SettingsIcon, Keyboard, ClipboardList,
   Clock, Download, Trash2, Check, Info, Database, Shield,
-  Monitor, MousePointer, RotateCcw, FolderOpen,
+  Monitor, MousePointer, RotateCcw, FolderOpen, X,
 } from 'lucide-vue-next'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -143,24 +143,30 @@ onMounted(load)
 
 <template>
   <div class="pref">
-    <!-- 左侧导航 -->
-    <aside class="pref-nav drag-region">
-      <button class="nav-back" @click="emit('close')">
-        <ArrowLeft :size="14" />
-        <span>返回</span>
+    <!-- 顶部标题栏 -->
+    <div class="pref-titlebar drag-region">
+      <SettingsIcon :size="14" class="titlebar-icon" />
+      <span class="titlebar-text">设置</span>
+      <button class="titlebar-close" @click="emit('close')" title="关闭设置">
+        <X :size="16" />
       </button>
-      <nav class="nav-list">
-        <button v-for="item in navItems" :key="item.key"
-          class="nav-item" :class="{ active: activeTab === item.key }"
-          @click="activeTab = item.key">
-          <component :is="item.icon" :size="16" />
-          <span>{{ item.label }}</span>
-        </button>
-      </nav>
-    </aside>
+    </div>
 
-    <!-- 右侧内容 -->
-    <main class="pref-content">
+    <div class="pref-body">
+      <!-- 左侧导航 -->
+      <aside class="pref-nav">
+        <nav class="nav-list">
+          <button v-for="item in navItems" :key="item.key"
+            class="nav-item" :class="{ active: activeTab === item.key }"
+            @click="activeTab = item.key">
+            <component :is="item.icon" :size="16" />
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
+      </aside>
+
+      <!-- 右侧内容 -->
+      <main class="pref-content">
       <!-- 通用 -->
       <div v-if="activeTab === 'general'" class="panel">
         <h2>通用设置</h2>
@@ -296,30 +302,44 @@ onMounted(load)
         </div>
       </div>
     </main>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .pref {
-  display: flex; height: 100%; background: var(--bg);
+  display: flex; flex-direction: column; height: 100%; background: var(--bg);
 }
+
+/* 顶部标题栏 */
+.pref-titlebar {
+  display: flex; align-items: center; gap: 8px;
+  height: 36px; padding: 0 12px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--bg-elevated);
+  flex-shrink: 0; user-select: none;
+}
+.titlebar-icon { color: var(--text-muted); }
+.titlebar-text { font-size: 13px; color: var(--text-secondary); flex: 1; }
+.titlebar-close {
+  width: 28px; height: 28px; border-radius: 6px;
+  background: transparent; border: none; color: var(--text-secondary);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+  --wails-draggable: no-drag; -webkit-app-region: no-drag;
+}
+.titlebar-close:hover { background: #e81123; color: #fff; }
+
+.pref-body { display: flex; flex: 1; overflow: hidden; }
 
 /* 左侧导航 */
 .pref-nav {
-  width: 140px; flex-shrink: 0;
+  width: 150px; flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--bg-elevated);
-  display: flex; flex-direction: column;
-  padding: 10px 0;
+  padding: 10px 0; overflow-y: auto;
 }
-.nav-back {
-  display: flex; align-items: center; gap: 4px;
-  background: transparent; border: none; color: var(--text-muted);
-  padding: 8px 14px; cursor: pointer; font-size: 12px;
-  --wails-draggable: no-drag; -webkit-app-region: no-drag;
-}
-.nav-back:hover { color: var(--text); }
-.nav-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding: 0 6px; }
+.nav-list { display: flex; flex-direction: column; gap: 2px; padding: 0 6px; }
 .nav-item {
   display: flex; align-items: center; gap: 8px;
   background: transparent; border: none; color: var(--text-secondary);

@@ -13,7 +13,7 @@ import {
   RevealInExplorer,
   SaveImageToFile,
 } from '../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+import { EventsOn, EventsOff, WindowSetSize, WindowCenter } from '../wailsjs/runtime/runtime'
 import type { types } from '../wailsjs/go/models'
 import Settings from './views/Settings.vue'
 import {
@@ -263,7 +263,17 @@ onUnmounted(() => {
   if (unsubscribe) unsubscribe()
 })
 
-watch(view, async (v) => { if (v === 'main') { await loadTheme(); await refresh() } })
+watch(view, async (v) => {
+  if (v === 'settings') {
+    WindowSetSize(680, 560)
+    WindowCenter()
+  } else {
+    WindowSetSize(480, 680)
+    WindowCenter()
+    await loadTheme()
+    await refresh()
+  }
+})
 
 function formatTime(t: string | Date): string {
   const d = new Date(t)
