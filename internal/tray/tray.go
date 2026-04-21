@@ -3,9 +3,6 @@
 // 基于 fyne.io/systray：
 //   - 左键单击图标：触发 OnShow（显示/隐藏主面板）
 //   - 右键单击图标：弹出菜单
-//
-// 在独立 goroutine 中通过 systray.Run 启动（阻塞），
-// systray 内部会自行创建隐藏窗口和消息泵。
 package tray
 
 import (
@@ -31,22 +28,26 @@ var iconICO []byte
 //go:embed icon.png
 var iconPNG []byte
 
-// Start 启动系统托盘（在新 goroutine 内阻塞运行）。
+// Start 启动系统托盘。
+//
+// macOS / Linux：Wails 已持有 NSApp / GTK 主循环，
+// 因此使用 systray.RunWithExternalLoop，并把 start() 调度到主线程执行。
+// Windows：systray 在独立 goroutine 中通过 systray.Run 运行即可。
+//
 // 返回 cleanup 回调：调用后关闭托盘。
 func Start(cb Callbacks) (cleanup func()) {
-	readyCh := make(chan struct{})
-
-	go systray.Run(func() {
-		// onReady
+	onReady := func() {
 		if runtime.GOOS == "windows" {
 			systray.SetIcon(iconICO)
 		} else {
-			systray.SetIcon(iconPNG)
+			// macOS：使用模板图标，系统会按菜单栏深浅主题自动着色，
+			// 也能得到正确的菜单栏显示尺寸（≈22pt）。
+			systray.SetTemplateIcon(iconPNG, iconPNG)
 		}
-		systray.SetTitle("gopaste")
+		systray.SetTitle("")
 		systray.SetTooltip("gopaste · 剪切板管理")
 
-		// 左键单击图标 → 显示主面板（设了这个后左键不再弹菜单）
+		// 左键单击图标 → 显示/隐藏主面板
 		systray.SetOnTapped(func() {
 			if cb.OnShow != nil {
 				cb.OnShow()
@@ -64,44 +65,51 @@ func Start(cb Callbacks) (cleanup func()) {
 		mRestart := systray.AddMenuItem("重启 gopaste", "重新启动应用")
 		mQuit := systray.AddMenuItem("退出 gopaste", "完全关闭应用")
 
-		close(readyCh) // 通知调用者已就绪
-
-		for {
-			select {
-			case <-mShow.ClickedCh:
-				if cb.OnShow != nil {
-					cb.OnShow()
+		go func() {
+			for {
+				select {
+				case <-mShow.ClickedCh:
+					if cb.OnShow != nil {
+						cb.OnShow()
+					}
+				case <-mOpenDir.ClickedCh:
+					if cb.OnOpenDir != nil {
+						cb.OnOpenDir()
+					}
+				case <-mClear.ClickedCh:
+					if cb.OnClear != nil {
+						cb.OnClear()
+					}
+				case <-mAbout.ClickedCh:
+					if cb.OnAbout != nil {
+						cb.OnAbout()
+					}
+				case <-mRestart.ClickedCh:
+					systray.Quit()
+					if cb.OnRestart != nil {
+						cb.OnRestart()
+					}
+					return
+				case <-mQuit.ClickedCh:
+					systray.Quit()
+					if cb.OnQuit != nil {
+						cb.OnQuit()
+					}
+					return
 				}
-			case <-mOpenDir.ClickedCh:
-				if cb.OnOpenDir != nil {
-					cb.OnOpenDir()
-				}
-			case <-mClear.ClickedCh:
-				if cb.OnClear != nil {
-					cb.OnClear()
-				}
-			case <-mAbout.ClickedCh:
-				if cb.OnAbout != nil {
-					cb.OnAbout()
-				}
-			case <-mRestart.ClickedCh:
-				systray.Quit()
-				if cb.OnRestart != nil {
-					cb.OnRestart()
-				}
-				return
-			case <-mQuit.ClickedCh:
-				systray.Quit()
-				if cb.OnQuit != nil {
-					cb.OnQuit()
-				}
-				return
 			}
-		}
-	}, func() {
-		// onExit
-	})
+		}()
+	}
 
-	<-readyCh // 等托盘创建完成再返回
-	return func() { systray.Quit() }
+	onExit := func() {}
+
+	if runtime.GOOS == "windows" {
+		go systray.Run(onReady, onExit)
+		return func() { systray.Quit() }
+	}
+
+	// macOS / Linux：使用 external loop 并把 start 派到主线程
+	start, end := systray.RunWithExternalLoop(onReady, onExit)
+	dispatchOnMain(start)
+	return end
 }

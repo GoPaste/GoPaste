@@ -8,19 +8,20 @@ package clipboard
 #import <Cocoa/Cocoa.h>
 #include <stdlib.h>
 
-// getFileURLs 返回剪切板中的文件路径（换行分隔），无文件返回空字符串。
+// getFileURLs 返回剪切板中的文件路径（换行分隔），无文件返回 NULL。
+// 调用方负责调用 free() 释放返回的非 NULL 指针。
 const char* getFileURLs() {
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
     NSArray *classes = @[[NSURL class]];
     NSDictionary *options = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES};
 
     if (![pb canReadObjectForClasses:classes options:options]) {
-        return "";
+        return NULL;
     }
 
     NSArray *urls = [pb readObjectsForClasses:classes options:options];
     if (!urls || urls.count == 0) {
-        return "";
+        return NULL;
     }
 
     NSMutableArray *paths = [NSMutableArray arrayWithCapacity:urls.count];
@@ -28,6 +29,9 @@ const char* getFileURLs() {
         if (url.isFileURL) {
             [paths addObject:url.path];
         }
+    }
+    if (paths.count == 0) {
+        return NULL;
     }
     NSString *joined = [paths componentsJoinedByString:@"\n"];
     return strdup([joined UTF8String]);

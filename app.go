@@ -117,6 +117,9 @@ func (a *App) startup(ctx context.Context) {
 		OnQuit:    a.quitApp,
 	})
 
+	// macOS：监听 Dock 图标点击（窗口已隐藏/最小化时点 Dock 可恢复）
+	tray.SetDockClickCallback(a.showPanel)
+
 	// 7) 启动时按策略 prune
 	go a.runPrune()
 
@@ -213,6 +216,15 @@ func (a *App) togglePanel() {
 	if a.ctx == nil {
 		return
 	}
+	// 直接用 Wails 运行时查询窗口真实状态，避免手动标志与实际状态不同步
+	// （用户通过 Cmd+H、最小化、Dock 点击等方式改变窗口状态时无需维护标志）
+	if wailsruntime.WindowIsMinimised(a.ctx) {
+		wailsruntime.WindowUnminimise(a.ctx)
+		wailsruntime.WindowShow(a.ctx)
+		wailsruntime.WindowCenter(a.ctx)
+		a.setVisible(true)
+		return
+	}
 	a.visMu.Lock()
 	visible := a.windowVisible
 	a.visMu.Unlock()
@@ -220,13 +232,23 @@ func (a *App) togglePanel() {
 	if visible {
 		wailsruntime.WindowHide(a.ctx)
 		a.setVisible(false)
+	} else {
+		wailsruntime.WindowShow(a.ctx)
+		wailsruntime.WindowCenter(a.ctx)
+		a.setVisible(true)
+	}
+}
+
+// showPanel 无条件显示窗口（用于 Dock 图标点击）。
+// 与 togglePanel 的差异：不会在可见时隐藏；点 Dock 图标永远是"想看到窗口"的语义。
+func (a *App) showPanel() {
+	if a.ctx == nil {
 		return
 	}
 	if wailsruntime.WindowIsMinimised(a.ctx) {
 		wailsruntime.WindowUnminimise(a.ctx)
 	}
 	wailsruntime.WindowShow(a.ctx)
-	wailsruntime.WindowCenter(a.ctx)
 	a.setVisible(true)
 }
 

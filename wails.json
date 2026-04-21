@@ -7,7 +7,7 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "willlv",
-    "email": "willlv@tencent.com"
+    "name": "larkwins",
+    "email": "larkwins@qq.com"
   }
 }
