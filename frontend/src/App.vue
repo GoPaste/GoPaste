@@ -254,7 +254,11 @@ function formatSize(bytes: number): string {
 function metaLine(it: Item): string {
   const parts: string[] = [typeLabel[it.type] || it.type]
   if (it.size) parts.push(formatSize(it.size))
-  if (it.charCount && it.type !== 'image') parts.push(`${it.charCount} Character(s)`)
+  if (it.type === 'file' && it.charCount) {
+    parts.push(`${it.charCount} 个文件`)
+  } else if (it.charCount && it.type !== 'image') {
+    parts.push(`${it.charCount} Character(s)`)
+  }
   parts.push(formatTime(it.updatedAt))
   return parts.join('  ')
 }

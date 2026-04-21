@@ -32,11 +32,12 @@ type App struct {
 	paths    *config.Paths
 	repo     *storage.Repo
 	watcher  *clipboard.Watcher
+	fileWatch *clipboard.FileWatcher
 	hotkey   *hotkey.Manager
 	trayEnd  func()
 	settings *settings.Store
 
-	// 窗口可见状态（用于左键托盘切换显示/隐藏）
+	// 窗口可见状态
 	visMu         sync.Mutex
 	windowVisible bool
 }
@@ -87,7 +88,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.settings = ss
 
-	// 4) 剪切板监听
+	// 4) 剪切板监听（文本 + 图片）
 	w := clipboard.New()
 	if err := w.Start(ctx); err != nil {
 		a.log.Error("start clipboard watcher", "err", err)
@@ -95,6 +96,12 @@ func (a *App) startup(ctx context.Context) {
 		a.watcher = w
 		go a.consumeEvents(ctx)
 	}
+
+	// 4b) 文件剪切板监听
+	fw := clipboard.NewFileWatcher()
+	fw.Start(ctx)
+	a.fileWatch = fw
+	go a.consumeFileEvents(ctx)
 
 	// 5) 快捷键
 	a.registerHotkey()
@@ -169,16 +176,34 @@ func (a *App) consumeEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
-			cp := item
-			if err := a.repo.Save(&cp); err != nil {
-				a.log.Error("save item", "err", err)
-				continue
-			}
-			notice := cp
-			notice.Content = nil
-			wailsruntime.EventsEmit(ctx, "clipboard:new", notice)
+			a.saveAndNotify(ctx, item)
 		}
 	}
+}
+
+func (a *App) consumeFileEvents(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item, ok := <-a.fileWatch.Events():
+			if !ok {
+				return
+			}
+			a.saveAndNotify(ctx, item)
+		}
+	}
+}
+
+func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
+	cp := item
+	if err := a.repo.Save(&cp); err != nil {
+		a.log.Error("save item", "err", err)
+		return
+	}
+	notice := cp
+	notice.Content = nil
+	wailsruntime.EventsEmit(ctx, "clipboard:new", notice)
 }
 
 // togglePanel 切换主窗口的可见状态：若已显示则隐藏，否则显示并置顶。
