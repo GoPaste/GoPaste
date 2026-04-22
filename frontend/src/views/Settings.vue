@@ -9,7 +9,7 @@ import {
 } from '../../wailsjs/go/main/App'
 import {
   ArrowLeft, Settings as SettingsIcon, Keyboard, ClipboardList,
-  Clock, Download, Trash2, Check, Info, Database, Shield,
+  Download, Trash2, Check, Info, Database, Shield,
   Monitor, MousePointer, RotateCcw, FolderOpen, X, Globe,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
@@ -17,14 +17,13 @@ import type { Lang } from '../i18n'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-type Tab = 'general' | 'clipboard' | 'shortcut' | 'history' | 'backup' | 'about'
+type Tab = 'general' | 'clipboard' | 'shortcut' | 'backup' | 'about'
 const activeTab = ref<Tab>('general')
 
 const navItems = computed(() => [
   { key: 'general' as Tab, label: t('navGeneral'), icon: SettingsIcon },
   { key: 'clipboard' as Tab, label: t('navClipboard'), icon: ClipboardList },
   { key: 'shortcut' as Tab, label: t('navShortcut'), icon: Keyboard },
-  { key: 'history' as Tab, label: t('navHistory'), icon: Clock },
   { key: 'backup' as Tab, label: t('navBackup'), icon: Database },
   { key: 'about' as Tab, label: t('navAbout'), icon: Info },
 ])
@@ -38,6 +37,12 @@ const form = reactive({
   language: 'zh' as Lang,
   autoPaste: true,
   hideOnPaste: true,
+  windowPosition: 'center',
+  scrollTopOnShow: true,
+  resetFilterOnShow: true,
+  silentStart: false,
+  showTrayIcon: true,
+  showTaskbarIcon: false,
 })
 
 const dataDir = ref('')
@@ -51,10 +56,14 @@ const hotkeyDisplay = computed(() => {
   return parts.join(' + ')
 })
 
-function onLangChange(e: Event) {
-  const v = (e.target as HTMLSelectElement).value as Lang
+function setLang(v: Lang) {
   form.language = v
-  lang.value = v // 实时生效
+  lang.value = v
+}
+
+function setTheme(val: string) {
+  form.theme = val
+  document.documentElement.setAttribute('data-theme', val)
 }
 
 async function load() {
@@ -68,6 +77,12 @@ async function load() {
   lang.value = form.language
   form.autoPaste = !!s.autoPaste
   form.hideOnPaste = !!s.hideOnPaste
+  form.windowPosition = s.windowPosition || 'center'
+  form.scrollTopOnShow = s.scrollTopOnShow !== false
+  form.resetFilterOnShow = s.resetFilterOnShow !== false
+  form.silentStart = !!s.silentStart
+  form.showTrayIcon = s.showTrayIcon !== false
+  form.showTaskbarIcon = !!s.showTaskbarIcon
   dataDir.value = await DataDir()
 }
 
@@ -84,6 +99,12 @@ async function save() {
       language: form.language,
       autoPaste: form.autoPaste,
       hideOnPaste: form.hideOnPaste,
+      windowPosition: form.windowPosition,
+      scrollTopOnShow: form.scrollTopOnShow,
+      resetFilterOnShow: form.resetFilterOnShow,
+      silentStart: form.silentStart,
+      showTrayIcon: form.showTrayIcon,
+      showTaskbarIcon: form.showTaskbarIcon,
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => (saveMsg.value = ''), 2000)
@@ -139,13 +160,13 @@ function normalizeKey(e: KeyboardEvent): { mods: string[], key: string } | null 
     'ArrowLeft': 'Left', 'ArrowRight': 'Right',
     'Enter': 'Enter', 'Return': 'Enter',
     'Escape': 'Escape', 'Esc': 'Escape',
-    'Backspace': 'Delete', 'Delete': 'Delete', 'Tab': 'Tab',
+    'Backspace': 'Backspace', 'Delete': 'Delete', 'Tab': 'Tab',
   }
   if (keyMap[key]) key = keyMap[key]
   else if (key.length === 1 && /[a-z]/.test(key)) key = key.toUpperCase()
-  else if (/^F(\d+)$/.test(key)) { /* F keys ok */ }
-  else if (key.length === 1 && /[A-Z0-9]/.test(key)) { /* ok */ }
-  else return null
+  else if (/^F(\d+)$/.test(key)) { /* F keys */ }
+  else if (key.length === 1) { /* any single char */ }
+  else key = key // accept as-is
   return { mods, key }
 }
 
@@ -177,32 +198,61 @@ onMounted(load)
       <main class="pref-content">
       <!-- 通用 -->
       <div v-if="activeTab === 'general'" class="panel">
-        <h2>{{ t('generalTitle') }}</h2>
-        <div class="field">
-          <label><Globe :size="14" /> {{ t('language') }}</label>
-          <select :value="form.language" @change="onLangChange">
-            <option value="zh">中文</option>
-            <option value="en">English</option>
-          </select>
-        </div>
-        <div class="field">
-          <label><Monitor :size="14" /> {{ t('theme') }}</label>
-          <div class="seg-ctrl">
-            <button :class="{ active: form.theme === 'dark' }" @click="form.theme = 'dark'">{{ t('dark') }}</button>
-            <button :class="{ active: form.theme === 'light' }" @click="form.theme = 'light'">{{ t('light') }}</button>
+        <div class="section-title">{{ t('appSettings') }}</div>
+        <div class="section-card">
+          <div class="card-row disabled">
+            <span>{{ t('launchOnLogin') }}</span>
+            <span class="badge">{{ t('comingSoon') }}</span>
+          </div>
+          <div class="card-row">
+            <div>
+              <span>{{ t('silentStart') }}</span>
+              <p class="desc-inline">{{ t('silentStartDesc') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.silentStart" /><span class="slider"></span></label>
+          </div>
+          <div class="card-row">
+            <div>
+              <span>{{ t('showTrayIcon') }}</span>
+              <p class="desc-inline">{{ t('restartRequired') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.showTrayIcon" /><span class="slider"></span></label>
+          </div>
+          <div class="card-row">
+            <div>
+              <span>{{ t('showTaskbarIcon') }}</span>
+              <p class="desc-inline">{{ t('restartRequired') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.showTaskbarIcon" /><span class="slider"></span></label>
           </div>
         </div>
-        <div class="field">
-          <label><MousePointer :size="14" /> {{ t('pasteBehavior') }}</label>
+
+        <div class="section-title">{{ t('appearSettings') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <span>{{ t('language') }}</span>
+            <div class="seg-ctrl seg-sm">
+              <button :class="{ active: form.language === 'zh' }" @click="setLang('zh')">简体中文</button>
+              <button :class="{ active: form.language === 'zh-TW' }" @click="setLang('zh-TW')">繁體中文</button>
+              <button :class="{ active: form.language === 'en' }" @click="setLang('en')">English</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <span>{{ t('theme') }}</span>
+            <div class="seg-ctrl seg-sm">
+              <button :class="{ active: form.theme === 'dark' }" @click="setTheme('dark')">{{ t('dark') }}</button>
+              <button :class="{ active: form.theme === 'light' }" @click="setTheme('light')">{{ t('light') }}</button>
+            </div>
+          </div>
         </div>
-        <label class="check">
-          <input type="checkbox" v-model="form.autoPaste" />
-          {{ t('autoPasteLabel') }}
-        </label>
-        <label class="check">
-          <input type="checkbox" v-model="form.hideOnPaste" />
-          {{ t('hideOnPasteLabel') }}
-        </label>
+
+        <div class="section-title">{{ t('updateSettings') }}</div>
+        <div class="section-card">
+          <div class="card-row disabled">
+            <span>{{ t('autoCheckUpdate') }}</span>
+            <span class="badge">{{ t('comingSoon') }}</span>
+          </div>
+        </div>
 
         <button class="btn-primary" :disabled="saving" @click="save">
           <Check :size="14" />
@@ -213,7 +263,19 @@ onMounted(load)
 
       <!-- 剪贴板 -->
       <div v-if="activeTab === 'clipboard'" class="panel">
-        <h2>{{ t('clipboardTitle') }}</h2>
+        <div class="field">
+          <label><MousePointer :size="14" /> {{ t('pasteBehavior') }}</label>
+        </div>
+        <div class="section-card">
+          <div class="card-row">
+            <span>{{ t('autoPasteLabel') }}</span>
+            <label class="toggle"><input type="checkbox" v-model="form.autoPaste" /><span class="slider"></span></label>
+          </div>
+          <div class="card-row">
+            <span>{{ t('hideOnPasteLabel') }}</span>
+            <label class="toggle"><input type="checkbox" v-model="form.hideOnPaste" /><span class="slider"></span></label>
+          </div>
+        </div>
         <div class="field">
           <label><Shield :size="14" /> {{ t('dataSecurity') }}</label>
           <p class="desc">{{ t('dataSecurityDesc') }}</p>
@@ -222,33 +284,6 @@ onMounted(load)
           <label><FolderOpen :size="14" /> {{ t('dataDir') }}</label>
           <code class="path">{{ dataDir }}</code>
         </div>
-      </div>
-
-      <!-- 快捷键 -->
-      <div v-if="activeTab === 'shortcut'" class="panel">
-        <h2>{{ t('shortcutTitle') }}</h2>
-        <div class="field">
-          <label><Keyboard :size="14" /> {{ t('togglePanel') }}</label>
-          <div class="hotkey-recorder" :class="{ recording }"
-            tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
-            <Keyboard :size="16" />
-            <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
-            <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
-            <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
-          </div>
-          <p class="desc" style="white-space:pre-line">{{ t('shortcutDesc') }}</p>
-        </div>
-
-        <button class="btn-primary" :disabled="saving" @click="save">
-          <Check :size="14" />
-          {{ saving ? t('saving') : t('saveShortcut') }}
-        </button>
-        <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
-      </div>
-
-      <!-- 历史记录 -->
-      <div v-if="activeTab === 'history'" class="panel">
-        <h2>{{ t('historyTitle') }}</h2>
         <div class="field">
           <label>{{ t('maxItems') }}</label>
           <div class="input-group">
@@ -271,6 +306,28 @@ onMounted(load)
           </button>
         </div>
 
+        <div class="field">
+          <label>{{ t('windowPosition') }}</label>
+          <div class="seg-ctrl">
+            <button :class="{ active: form.windowPosition === 'follow' }" @click="form.windowPosition = 'follow'">{{ t('wpFollow') }}</button>
+            <button :class="{ active: form.windowPosition === 'remember' }" @click="form.windowPosition = 'remember'">{{ t('wpRemember') }}</button>
+            <button :class="{ active: form.windowPosition === 'center' }" @click="form.windowPosition = 'center'">{{ t('wpCenter') }}</button>
+          </div>
+        </div>
+        <div class="section-card">
+          <div class="card-row">
+            <div>
+              <span>{{ t('scrollTopOnShow') }}</span>
+              <p class="desc-inline">{{ t('scrollTopOnShowDesc') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.scrollTopOnShow" /><span class="slider"></span></label>
+          </div>
+          <div class="card-row">
+            <span>{{ t('resetFilterOnShow') }}</span>
+            <label class="toggle"><input type="checkbox" v-model="form.resetFilterOnShow" /><span class="slider"></span></label>
+          </div>
+        </div>
+
         <button class="btn-primary" :disabled="saving" @click="save">
           <Check :size="14" />
           {{ saving ? t('saving') : t('saveSettings') }}
@@ -278,9 +335,29 @@ onMounted(load)
         <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
       </div>
 
+      <!-- 快捷键 -->
+      <div v-if="activeTab === 'shortcut'" class="panel">
+        <div class="field">
+          <label><Keyboard :size="14" /> {{ t('togglePanel') }}</label>
+          <div class="hotkey-recorder" :class="{ recording }"
+            tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
+            <Keyboard :size="16" />
+            <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
+            <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
+            <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
+          </div>
+          <p class="desc" style="white-space:pre-line">{{ t('shortcutDesc') }}</p>
+        </div>
+
+        <button class="btn-primary" :disabled="saving" @click="save">
+          <Check :size="14" />
+          {{ saving ? t('saving') : t('saveShortcut') }}
+        </button>
+        <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
+      </div>
+
       <!-- 备份 -->
       <div v-if="activeTab === 'backup'" class="panel">
-        <h2>{{ t('backupTitle') }}</h2>
         <div class="field">
           <label><Download :size="14" /> {{ t('exportData') }}</label>
           <p class="desc">{{ t('exportDesc') }}</p>
@@ -297,9 +374,8 @@ onMounted(load)
 
       <!-- 关于 -->
       <div v-if="activeTab === 'about'" class="panel">
-        <h2>{{ t('aboutTitle') }}</h2>
         <div class="about-card">
-          <div class="about-logo">P</div>
+          <img class="about-logo" src="/appicon.png" />
           <div class="about-info">
             <div class="about-name">GoPaste</div>
             <div class="about-ver">v0.1.0</div>
@@ -313,7 +389,6 @@ onMounted(load)
         <div class="about-links">
           <div class="link-row"><span class="link-label">{{ t('techStack') }}</span><span>Go · Vue 3 · Wails · SQLite</span></div>
           <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>MIT</span></div>
-          <div class="link-row"><span class="link-label">{{ t('dataDir') }}</span><code>{{ dataDir }}</code></div>
         </div>
       </div>
     </main>
@@ -357,14 +432,14 @@ onMounted(load)
   display: flex; align-items: center; gap: 6px;
   background: transparent; border: none; color: var(--text-secondary);
   padding: 8px 10px; border-radius: 6px; cursor: pointer;
-  font-size: 12px; text-align: left; transition: all .12s;
+  font-size: 13px; line-height: 20px; text-align: left; transition: all .12s;
   --wails-draggable: no-drag; -webkit-app-region: no-drag;
 }
 .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
 .nav-item.active { background: var(--accent); color: #fff; }
 
 .pref-content {
-  flex: 1; overflow-y: auto; padding: 16px 14px;
+  flex: 1; overflow-y: auto; padding: 16px 14px; text-align: left;
 }
 .panel h2 {
   font-size: 16px; font-weight: 600; color: var(--text);
@@ -382,8 +457,8 @@ onMounted(load)
   padding: 6px 10px; border-radius: 6px; font-size: 13px; outline: none;
 }
 .field select:focus { border-color: var(--accent); }
-.desc { font-size: 12px; color: var(--text-muted); margin: 4px 0 8px; line-height: 1.5; }
-.path { font-size: 12px; background: var(--bg-elevated); padding: 5px 10px; border-radius: 4px; color: var(--text-secondary); display: inline-block; }
+.desc { font-size: 12px; color: var(--text-muted); margin: 4px 0 8px; line-height: 1.5; text-align: left; }
+.path { font-size: 12px; background: var(--bg-elevated); padding: 5px 10px; border-radius: 4px; color: var(--text-secondary); display: inline-block; text-align: left; }
 
 .input-group { display: flex; align-items: center; gap: 8px; }
 .input-group input {
@@ -447,11 +522,9 @@ onMounted(load)
 }
 .about-logo {
   width: 48px; height: 48px; border-radius: 12px;
-  background: linear-gradient(135deg, #2196F3, #00BCD4);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 28px; font-weight: 700; color: #fff;
-  font-family: -apple-system, sans-serif;
+  object-fit: cover; flex-shrink: 0;
 }
+.about-info { text-align: left; }
 .about-name { font-size: 16px; font-weight: 600; color: var(--text); }
 .about-ver { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .about-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
@@ -476,6 +549,50 @@ onMounted(load)
 .seg-ctrl button:not(:last-child) { border-right: 1px solid var(--border); }
 .seg-ctrl button.active { background: var(--accent); color: #fff; }
 .seg-ctrl button:hover:not(.active) { background: var(--bg-hover); }
+.seg-sm button { padding: 4px 10px; font-size: 12px; }
+
+/* 区块标题 */
+.section-title {
+  font-size: 13px; font-weight: 600; color: var(--accent);
+  margin: 16px 0 8px; padding: 0;
+}
+.section-title:first-child { margin-top: 0; }
+
+/* 卡片容器 */
+.section-card {
+  background: var(--bg-elevated); border-radius: 10px;
+  border: 1px solid var(--border-light); overflow: hidden;
+  margin-bottom: 6px;
+}
+.card-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; font-size: 13px; color: var(--text);
+  border-bottom: 1px solid var(--border-light);
+}
+.card-row:last-child { border-bottom: none; }
+.card-row.disabled { opacity: .45; pointer-events: none; }
+.card-row > div { display: flex; flex-direction: column; gap: 2px; }
+.desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }
+
+/* Badge */
+.badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: var(--border); color: var(--text-muted);
+}
+
+/* Toggle switch */
+.toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider {
+  position: absolute; inset: 0; cursor: pointer;
+  background: var(--border); border-radius: 11px; transition: .2s;
+}
+.toggle .slider::before {
+  content: ''; position: absolute; width: 16px; height: 16px;
+  left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s;
+}
+.toggle input:checked + .slider { background: var(--accent); }
+.toggle input:checked + .slider::before { transform: translateX(18px); }
 
 .drag-region { --wails-draggable: drag; -webkit-app-region: drag; }
 .drag-region button { --wails-draggable: no-drag; -webkit-app-region: no-drag; }

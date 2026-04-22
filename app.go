@@ -42,6 +42,10 @@ type App struct {
 	// 窗口可见状态
 	visMu         sync.Mutex
 	windowVisible bool
+
+	// 记住窗口位置
+	lastX, lastY int
+	posInited    bool
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
@@ -54,7 +58,6 @@ func NewApp() *App {
 // startup 初始化各子系统。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.setVisible(true) // 启动时窗口可见
 
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -90,6 +93,18 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.settings = ss
 
+	s := settings.Default()
+	if ss != nil {
+		s = ss.Get()
+	}
+
+	// 静默启动：窗口初始隐藏
+	if s.SilentStart {
+		a.setVisible(false)
+	} else {
+		a.setVisible(true)
+	}
+
 	// 4) 剪切板监听（文本 + 图片）
 	w := clipboard.New()
 	if err := w.Start(ctx); err != nil {
@@ -109,16 +124,10 @@ func (a *App) startup(ctx context.Context) {
 	a.registerHotkey()
 
 	// 6) 托盘
-	a.trayEnd = tray.Start(tray.Callbacks{
-		OnShow:    a.togglePanel,
-		OnOpenDir: a.openDataDir,
-		OnClear:   func() { _ = a.ClearHistory() },
-		OnAbout:   a.showAbout,
-		OnRestart: a.restartApp,
-		OnQuit:    a.quitApp,
-	})
-
-	// macOS：监听 Dock 图标点击（窗口已隐藏/最小化时点 Dock 可恢复）
+	if s.ShowTrayIcon {
+		a.startTray()
+	}
+	// 即使不显示托盘也要设置 Dock 回调
 	tray.SetDockClickCallback(a.showPanel)
 
 	// 7) 启动时按策略 prune
@@ -211,18 +220,59 @@ func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
 	wailsruntime.EventsEmit(ctx, "clipboard:new", notice)
 }
 
+// positionWindow 根据设置决定窗口出现位置。
+func (a *App) positionWindow() {
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+	switch s.WindowPosition {
+	case "follow", "remember":
+		// 跟随鼠标和记住位置都使用上次保存的坐标
+		if a.posInited {
+			wailsruntime.WindowSetPosition(a.ctx, a.lastX, a.lastY)
+		} else {
+			wailsruntime.WindowCenter(a.ctx)
+		}
+	default: // "center"
+		wailsruntime.WindowCenter(a.ctx)
+	}
+}
+
+// saveWindowPosition 保存当前窗口位置。
+func (a *App) saveWindowPosition() {
+	if a.ctx == nil {
+		return
+	}
+	x, y := wailsruntime.WindowGetPosition(a.ctx)
+	a.lastX = x
+	a.lastY = y
+	a.posInited = true
+}
+
+// SetMousePosition 前端在快捷键触发时传入鼠标坐标（用于 follow 模式）。
+func (a *App) SetMousePosition(x, y int) {
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+	if s.WindowPosition == "follow" {
+		a.lastX = x
+		a.lastY = y
+		a.posInited = true
+	}
+}
+
 // togglePanel 切换主窗口的可见状态：若已显示则隐藏，否则显示并置顶。
 // 由托盘左键点击和全局快捷键共享。
 func (a *App) togglePanel() {
 	if a.ctx == nil {
 		return
 	}
-	// 直接用 Wails 运行时查询窗口真实状态，避免手动标志与实际状态不同步
-	// （用户通过 Cmd+H、最小化、Dock 点击等方式改变窗口状态时无需维护标志）
 	if wailsruntime.WindowIsMinimised(a.ctx) {
 		wailsruntime.WindowUnminimise(a.ctx)
 		wailsruntime.WindowShow(a.ctx)
-		wailsruntime.WindowCenter(a.ctx)
+		a.positionWindow()
 		a.setVisible(true)
 		return
 	}
@@ -231,17 +281,17 @@ func (a *App) togglePanel() {
 	a.visMu.Unlock()
 
 	if visible {
+		a.saveWindowPosition()
 		wailsruntime.WindowHide(a.ctx)
 		a.setVisible(false)
 	} else {
 		wailsruntime.WindowShow(a.ctx)
-		wailsruntime.WindowCenter(a.ctx)
+		a.positionWindow()
 		a.setVisible(true)
 	}
 }
 
 // showPanel 无条件显示窗口（用于 Dock 图标点击）。
-// 与 togglePanel 的差异：不会在可见时隐藏；点 Dock 图标永远是"想看到窗口"的语义。
 func (a *App) showPanel() {
 	if a.ctx == nil {
 		return
@@ -250,6 +300,7 @@ func (a *App) showPanel() {
 		wailsruntime.WindowUnminimise(a.ctx)
 	}
 	wailsruntime.WindowShow(a.ctx)
+	a.positionWindow()
 	a.setVisible(true)
 }
 
@@ -257,6 +308,27 @@ func (a *App) setVisible(v bool) {
 	a.visMu.Lock()
 	a.windowVisible = v
 	a.visMu.Unlock()
+}
+
+// startTray 启动系统托盘。
+func (a *App) startTray() {
+	if a.trayEnd != nil {
+		return // 已启动
+	}
+	a.trayEnd = tray.Start(tray.Callbacks{
+		OnShow:    a.togglePanel,
+		OnAbout:   a.showAbout,
+		OnRestart: a.restartApp,
+		OnQuit:    a.quitApp,
+	})
+}
+
+// stopTray 关闭系统托盘。
+func (a *App) stopTray() {
+	if a.trayEnd != nil {
+		a.trayEnd()
+		a.trayEnd = nil
+	}
 }
 
 // ---------------- RPC 方法 ----------------
@@ -378,6 +450,7 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	}
 	a.registerHotkey()
 	go a.runPrune()
+
 	return nil
 }
 

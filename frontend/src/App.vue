@@ -285,12 +285,30 @@ function applyTheme(t: string) {
   document.documentElement.setAttribute('data-theme', theme.value)
 }
 
-async function loadTheme() {
+async function loadSettings() {
   try {
     const s: any = await GetSettings()
     applyTheme(s?.theme || 'dark')
     if (s?.language) lang.value = s.language as Lang
-  } catch { /* ignore */ }
+    return s
+  } catch { return null }
+}
+
+// 窗口激活时：根据设置回到顶部 / 切换至全部分组
+async function onWindowFocus() {
+  if (view.value !== 'main') return
+  const s: any = await GetSettings()
+  if (!s) return
+  let needRefresh = false
+  if (s.resetFilterOnShow && typeFilter.value !== '') {
+    typeFilter.value = ''
+    needRefresh = true
+  }
+  if (needRefresh) await refresh()
+  if (s.scrollTopOnShow) {
+    selectedIdx.value = 0
+    listRef.value?.scrollTo({ top: 0 })
+  }
 }
 
 // 当前筛选 tab 的索引（用于 Tab/左右键切换）
@@ -336,7 +354,8 @@ let unsubscribe: (() => void) | null = null
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('blur', onWindowBlur)
-  await loadTheme()
+  window.addEventListener('focus', onWindowFocus)
+  await loadSettings()
   await refresh()
   EventsOn('clipboard:new', async () => { await refresh() })
   unsubscribe = () => EventsOff('clipboard:new')
@@ -345,12 +364,13 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('blur', onWindowBlur)
+  window.removeEventListener('focus', onWindowFocus)
   if (unsubscribe) unsubscribe()
 })
 
 watch(view, async (v) => {
   if (v === 'main') {
-    await loadTheme()
+    await loadSettings()
     await refresh()
   }
 })

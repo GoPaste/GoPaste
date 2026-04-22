@@ -11,27 +11,39 @@ import (
 
 // Settings 用户偏好。
 type Settings struct {
-	HotkeyModifiers []string `json:"hotkeyModifiers"` // ["ctrl","shift"] 或 ["cmd","shift"]
-	HotkeyKey       string   `json:"hotkeyKey"`       // "V"
-	MaxItems        int      `json:"maxItems"`        // 非收藏/置顶的最大保留条数，0 表示不限制
-	MaxDays         int      `json:"maxDays"`         // 保留天数，0 表示不限制
-	Theme           string   `json:"theme"`           // "dark" | "light" | "auto"
-	Language        string   `json:"language"`        // "zh" | "en"
-	AutoPaste       bool     `json:"autoPaste"`       // 选中后是否模拟发送粘贴键
-	HideOnPaste     bool     `json:"hideOnPaste"`     // 粘贴后是否自动隐藏窗口
+	HotkeyModifiers   []string `json:"hotkeyModifiers"`
+	HotkeyKey         string   `json:"hotkeyKey"`
+	MaxItems          int      `json:"maxItems"`
+	MaxDays           int      `json:"maxDays"`
+	Theme             string   `json:"theme"`
+	Language          string   `json:"language"`
+	AutoPaste         bool     `json:"autoPaste"`
+	HideOnPaste       bool     `json:"hideOnPaste"`
+	WindowPosition    string   `json:"windowPosition"`
+	ScrollTopOnShow   bool     `json:"scrollTopOnShow"`
+	ResetFilterOnShow bool     `json:"resetFilterOnShow"`
+	SilentStart       bool     `json:"silentStart"`       // 静默启动（启动时隐藏窗口）
+	ShowTrayIcon      bool     `json:"showTrayIcon"`      // 显示菜单栏/托盘图标
+	ShowTaskbarIcon   bool     `json:"showTaskbarIcon"`   // 显示任务栏图标
 }
 
 // Default 返回默认设置。
 func Default() Settings {
 	return Settings{
-		HotkeyModifiers: []string{"ctrl", "shift"},
-		HotkeyKey:       "V",
-		MaxItems:        1000,
-		MaxDays:         30,
-		Theme:           "dark",
-		Language:        "zh",
-		AutoPaste:       true,
-		HideOnPaste:     true,
+		HotkeyModifiers:   []string{"ctrl", "shift"},
+		HotkeyKey:         "V",
+		MaxItems:          1000,
+		MaxDays:           30,
+		Theme:             "dark",
+		Language:          "zh",
+		AutoPaste:         true,
+		HideOnPaste:       true,
+		WindowPosition:    "center",
+		ScrollTopOnShow:   true,
+		ResetFilterOnShow: true,
+		SilentStart:       false,
+		ShowTrayIcon:      true,
+		ShowTaskbarIcon:   false,
 	}
 }
 
@@ -56,29 +68,12 @@ func Open(path string) (*Store, error) {
 		}
 		return nil, err
 	}
-	var loaded Settings
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		// 文件损坏：回退默认值，但不覆盖原文件（避免丢用户数据）
+	// 先填充默认值，再用 JSON 覆盖——缺失的字段自动保持默认
+	merged := Default()
+	if err := json.Unmarshal(data, &merged); err != nil {
+		// 文件损坏：回退默认值，但不覆盖原文件
 		return s, nil
 	}
-	// 合并：用户未设置的字段保持默认
-	merged := Default()
-	if len(loaded.HotkeyModifiers) > 0 {
-		merged.HotkeyModifiers = loaded.HotkeyModifiers
-	}
-	if loaded.HotkeyKey != "" {
-		merged.HotkeyKey = loaded.HotkeyKey
-	}
-	merged.MaxItems = loaded.MaxItems
-	merged.MaxDays = loaded.MaxDays
-	if loaded.Theme != "" {
-		merged.Theme = loaded.Theme
-	}
-	if loaded.Language != "" {
-		merged.Language = loaded.Language
-	}
-	merged.AutoPaste = loaded.AutoPaste
-	merged.HideOnPaste = loaded.HideOnPaste
 	s.cur = merged
 	return s, nil
 }

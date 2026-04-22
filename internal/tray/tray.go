@@ -15,8 +15,6 @@ import (
 // Callbacks 托盘菜单项 / 交互行为。
 type Callbacks struct {
 	OnShow    func() // 左键单击托盘图标 / 菜单"显示主面板"
-	OnOpenDir func() // 菜单"打开数据目录"
-	OnClear   func() // 菜单"清空历史"
 	OnAbout   func() // 菜单"关于"
 	OnRestart func() // 菜单"重启"
 	OnQuit    func() // 菜单"退出"
@@ -57,9 +55,6 @@ func Start(cb Callbacks) (cleanup func()) {
 		// 右键菜单项
 		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
 		systray.AddSeparator()
-		mOpenDir := systray.AddMenuItem("打开数据目录", "在文件管理器中打开")
-		mClear := systray.AddMenuItem("清空历史", "清空未收藏/未置顶的历史")
-		systray.AddSeparator()
 		mAbout := systray.AddMenuItem("关于 GoPaste", "版本与项目信息")
 		systray.AddSeparator()
 		mRestart := systray.AddMenuItem("重启 GoPaste", "重新启动应用")
@@ -71,14 +66,6 @@ func Start(cb Callbacks) (cleanup func()) {
 				case <-mShow.ClickedCh:
 					if cb.OnShow != nil {
 						cb.OnShow()
-					}
-				case <-mOpenDir.ClickedCh:
-					if cb.OnOpenDir != nil {
-						cb.OnOpenDir()
-					}
-				case <-mClear.ClickedCh:
-					if cb.OnClear != nil {
-						cb.OnClear()
 					}
 				case <-mAbout.ClickedCh:
 					if cb.OnAbout != nil {
