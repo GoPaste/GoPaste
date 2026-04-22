@@ -28,9 +28,11 @@ var iconPNG []byte
 
 // Start 启动系统托盘。
 //
-// macOS / Linux：Wails 已持有 NSApp / GTK 主循环，
-// 因此使用 systray.RunWithExternalLoop，并把 start() 调度到主线程执行。
-// Windows：systray 在独立 goroutine 中通过 systray.Run 运行即可。
+//   - macOS：NSApp 已被 Wails 持有主线程，必须使用 RunWithExternalLoop，
+//     并把返回的 start() 调度到主线程执行，否则 NSStatusBar 会在非主线程
+//     构建，表现为"菜单栏无图标且无报错"。
+//   - Linux：同样使用 RunWithExternalLoop（GTK 主循环由 Wails 持有）。
+//   - Windows：systray 自己跑消息循环，放到独立 goroutine 里即可。
 //
 // 返回 cleanup 回调：调用后关闭托盘。
 func Start(cb Callbacks) (cleanup func()) {
@@ -87,9 +89,20 @@ func Start(cb Callbacks) (cleanup func()) {
 			}
 		}()
 	}
-
 	onExit := func() {}
 
-	go systray.Run(onReady, onExit)
-	return func() { systray.Quit() }
+	if runtime.GOOS == "windows" {
+		// Windows 上 systray.Run 会内部创建消息线程，放 goroutine 里跑即可。
+		go systray.Run(onReady, onExit)
+		return func() { systray.Quit() }
+	}
+
+	// macOS / Linux：外部主循环集成。
+	start, end := systray.RunWithExternalLoop(onReady, onExit)
+	// start() 必须在主线程执行（NSStatusBar 要求）。dispatch_darwin.go 提供
+	// 了主线程调度；Linux 上 dispatchOnMain 为 no-op 直接同步执行。
+	dispatchOnMain(start)
+	return func() {
+		end()
+	}
 }
