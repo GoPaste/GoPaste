@@ -17,8 +17,9 @@ type Settings struct {
 	MaxDays           int      `json:"maxDays"`
 	Theme             string   `json:"theme"`
 	Language          string   `json:"language"`
-	AutoPaste         bool     `json:"autoPaste"`
-	HideOnPaste       bool     `json:"hideOnPaste"`
+	AutoPaste         bool     `json:"autoPaste"`   // Deprecated: 保留字段以兼容旧配置反序列化；新版由 PasteTrigger 控制
+	HideOnPaste       bool     `json:"hideOnPaste"` // Deprecated: 同上
+	PasteTrigger      string   `json:"pasteTrigger"` // "single" | "double"，决定列表项何种点击动作触发粘贴
 	WindowPosition    string   `json:"windowPosition"`
 	ScrollTopOnShow   bool     `json:"scrollTopOnShow"`
 	ResetFilterOnShow bool     `json:"resetFilterOnShow"`
@@ -38,6 +39,7 @@ func Default() Settings {
 		Language:          "zh",
 		AutoPaste:         true,
 		HideOnPaste:       true,
+		PasteTrigger:      "double",
 		WindowPosition:    "center",
 		ScrollTopOnShow:   true,
 		ResetFilterOnShow: true,
@@ -75,6 +77,10 @@ func Open(path string) (*Store, error) {
 		return s, nil
 	}
 	s.cur = merged
+	// 兼容旧配置：如果未设置 PasteTrigger，默认使用双击（与旧版 autoPaste=true 等价）
+	if s.cur.PasteTrigger == "" {
+		s.cur.PasteTrigger = "double"
+	}
 	return s, nil
 }
 

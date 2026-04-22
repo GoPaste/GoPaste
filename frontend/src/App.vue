@@ -15,6 +15,7 @@ import {
   RevealInExplorer,
   SaveImageToFile,
   GetFileThumbnail,
+  SetNote,
 } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff, WindowSetAlwaysOnTop } from '../wailsjs/runtime/runtime'
 import type { types } from '../wailsjs/go/models'
@@ -38,6 +39,8 @@ import {
   AlertTriangle,
   FolderOpen,
   Download,
+  Edit3,
+  X,
 } from 'lucide-vue-next'
 
 type Item = types.Item
@@ -55,6 +58,12 @@ const detailContent = ref<string>('')
 const detailVisible = ref(false)
 const loading = ref(false)
 
+// 分页
+const PAGE_SIZE = 20
+const page = ref(1)
+const hasMore = computed(() => items.value.length < total.value)
+const loadingMore = ref(false)
+
 // 图片缩略图缓存
 const imageThumbs = ref<Record<number, string>>({})
 // 文件类型的图片缩略图缓存
@@ -67,11 +76,17 @@ function isImageFile(name: string): boolean {
 
 // 回到顶部
 const listRef = ref<HTMLElement | null>(null)
+const searchRef = ref<HTMLInputElement | null>(null)
 const showBackTop = ref(false)
 
 function onListScroll() {
-  if (listRef.value) {
-    showBackTop.value = listRef.value.scrollTop > 200
+  const el = listRef.value
+  if (!el) return
+  showBackTop.value = el.scrollTop > 200
+  // 滚动到距离底部还剩总高度的 1/4 时触发加载更多（动态阈值）
+  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (remaining < el.scrollHeight / 4 && hasMore.value && !loadingMore.value) {
+    loadMore()
   }
 }
 function scrollToTop() {
@@ -100,6 +115,7 @@ const selected = computed<Item | undefined>(() => items.value[selectedIdx.value]
 
 async function refresh() {
   loading.value = true
+  page.value = 1
   try {
     const isFav = typeFilter.value === ('fav' as any)
     const r = await ListItems({
@@ -107,25 +123,58 @@ async function refresh() {
       type: isFav ? '' : typeFilter.value,
       favorite: isFav,
       page: 1,
-      pageSize: 200,
+      pageSize: PAGE_SIZE,
     } as any)
     items.value = (r?.items || []) as Item[]
     total.value = r?.total || 0
     if (selectedIdx.value >= items.value.length) selectedIdx.value = 0
-    for (const it of items.value) {
-      if (it.type === 'image' && !imageThumbs.value[it.id]) {
-        loadThumb(it.id)
-      }
-      // 文件类型：单个图片文件加载预览
-      if (it.type === 'file' && !fileThumbs.value[it.id]) {
-        const names = (it.preview || '').split('\n')
-        if (names.length === 1 && isImageFile(names[0])) {
-          loadFileThumb(it.id)
-        }
-      }
-    }
+    loadThumbs(items.value)
   } finally {
     loading.value = false
+  }
+}
+
+// 点击搜索框右侧 X：清空关键字、刷新并保持焦点
+function clearKeyword() {
+  if (!keyword.value) return
+  keyword.value = ''
+  refresh()
+  searchRef.value?.focus()
+}
+
+async function loadMore() {
+  if (loadingMore.value || !hasMore.value) return
+  loadingMore.value = true
+  try {
+    const nextPage = page.value + 1
+    const isFav = typeFilter.value === ('fav' as any)
+    const r = await ListItems({
+      keyword: keyword.value,
+      type: isFav ? '' : typeFilter.value,
+      favorite: isFav,
+      page: nextPage,
+      pageSize: PAGE_SIZE,
+    } as any)
+    const newItems = (r?.items || []) as Item[]
+    items.value.push(...newItems)
+    page.value = nextPage
+    loadThumbs(newItems)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+function loadThumbs(list: Item[]) {
+  for (const it of list) {
+    if (it.type === 'image' && !imageThumbs.value[it.id]) {
+      loadThumb(it.id)
+    }
+    if (it.type === 'file' && !fileThumbs.value[it.id]) {
+      const names = (it.preview || '').split('\n')
+      if (names.length === 1 && isImageFile(names[0])) {
+        loadFileThumb(it.id)
+      }
+    }
   }
 }
 
@@ -185,20 +234,40 @@ async function showDetail(it: Item) {
   }
 }
 
-async function doPaste(it: Item) { await PasteItem(it.id) }
+async function doPaste(it: Item) {
+  try {
+    console.log('[paste] trigger=', pasteTrigger.value, 'id=', it.id)
+    await PasteItem(it.id)
+  } catch (e) {
+    console.error('[paste] PasteItem failed', e)
+  }
+}
 async function doCopy(it: Item) { await CopyToClipboard(it.id) }
+
+// 粘贴触发方式：'single' 单击立即粘贴 | 'double' 双击粘贴（默认，单击仅选中）
+const pasteTrigger = ref<'single' | 'double'>('double')
+// 单击模式下的延时触发器：区分单击/双击（双击时取消单击的 doPaste）
+let singleClickTimer: number | null = null
+const DBLCLICK_THRESHOLD_MS = 250
 
 function onItemClick(idx: number, it: Item) {
   selectedIdx.value = idx
-  // 图片类型或文件类型图片：单击直接预览
-  if (it.type === 'image') {
-    showDetail(it)
-  } else if (it.type === 'file') {
-    const names = (it.preview || '').split('\n')
-    if (names.length === 1 && isImageFile(names[0])) {
-      showDetail(it)
-    }
+  if (pasteTrigger.value !== 'single') return
+  // 延迟执行，若在阈值内触发 dblclick，由 onItemDblClick 取消
+  if (singleClickTimer != null) window.clearTimeout(singleClickTimer)
+  singleClickTimer = window.setTimeout(() => {
+    singleClickTimer = null
+    doPaste(it)
+  }, DBLCLICK_THRESHOLD_MS)
+}
+
+function onItemDblClick(it: Item) {
+  // 取消单击模式下排队的 doPaste，避免双重触发
+  if (singleClickTimer != null) {
+    window.clearTimeout(singleClickTimer)
+    singleClickTimer = null
   }
+  doPaste(it)
 }
 
 // 自定义确认弹窗
@@ -223,6 +292,25 @@ async function doDelete(it: Item) {
 }
 async function doTogglePin(it: Item) { await TogglePin(it.id, !it.pinned); await refresh() }
 async function doToggleFav(it: Item) { await ToggleFavorite(it.id, !it.favorite); await refresh() }
+
+// 备注弹窗
+const noteVisible = ref(false)
+const noteText = ref('')
+const noteItem = ref<Item | null>(null)
+
+function showNoteDialog(it: Item) {
+  noteItem.value = it
+  noteText.value = it.note || ''
+  noteVisible.value = true
+}
+async function onNoteOk() {
+  if (noteItem.value) {
+    await SetNote(noteItem.value.id, noteText.value.trim())
+    await refresh()
+  }
+  noteVisible.value = false
+}
+function onNoteCancel() { noteVisible.value = false }
 
 // 右键菜单
 const ctxMenu = ref<{ visible: boolean; x: number; y: number; item: Item | null }>({
@@ -253,6 +341,7 @@ async function ctxFav() { if (ctxMenu.value.item) await doToggleFav(ctxMenu.valu
 async function ctxPin() { if (ctxMenu.value.item) await doTogglePin(ctxMenu.value.item); closeCtxMenu() }
 async function ctxDelete() { if (ctxMenu.value.item) await doDelete(ctxMenu.value.item); closeCtxMenu() }
 async function ctxDetail() { if (ctxMenu.value.item) await showDetail(ctxMenu.value.item); closeCtxMenu() }
+function ctxNote() { if (ctxMenu.value.item) showNoteDialog(ctxMenu.value.item); closeCtxMenu() }
 async function ctxReveal() {
   if (!ctxMenu.value.item) return
   // 获取文件路径（content 是换行分隔的路径）
@@ -290,6 +379,7 @@ async function loadSettings() {
     const s: any = await GetSettings()
     applyTheme(s?.theme || 'dark')
     if (s?.language) lang.value = s.language as Lang
+    pasteTrigger.value = (s?.pasteTrigger === 'single' ? 'single' : 'double')
     return s
   } catch { return null }
 }
@@ -309,6 +399,8 @@ async function onWindowFocus() {
     selectedIdx.value = 0
     listRef.value?.scrollTo({ top: 0 })
   }
+  // 聚焦搜索框
+  searchRef.value?.focus()
 }
 
 // 当前筛选 tab 的索引（用于 Tab/左右键切换）
@@ -427,7 +519,18 @@ function onWindowBlur() {
       <header class="topbar drag-region">
         <div class="search">
           <Search :size="16" class="search-icon" />
-          <input v-model="keyword" :placeholder="t('search')" @input="refresh" autofocus />
+          <input ref="searchRef" v-model="keyword" :placeholder="t('search')" @input="refresh" autofocus />
+          <button
+            v-if="keyword"
+            class="search-clear"
+            type="button"
+            :title="t('clearSearch')"
+            :aria-label="t('clearSearch')"
+            @click="clearKeyword"
+            @mousedown.prevent
+          >
+            <X :size="14" />
+          </button>
         </div>
         <button class="icon-btn" :class="{ active: alwaysOnTop }" @click="toggleAlwaysOnTop">
           <Pin :size="16" :fill="alwaysOnTop ? 'currentColor' : 'none'" />
@@ -454,7 +557,7 @@ function onWindowBlur() {
 
         <div v-for="(it, idx) in items" :key="it.id" class="item"
           :class="{ active: idx === selectedIdx, pinned: it.pinned }"
-          @click="onItemClick(idx, it)" @dblclick="doPaste(it)"
+          @click="onItemClick(idx, it)" @dblclick="onItemDblClick(it)"
           @contextmenu="onItemContextMenu($event, it)">
 
           <!-- 第一行：元信息 + 操作按钮 -->
@@ -477,7 +580,7 @@ function onWindowBlur() {
           <div class="item-row2">
             <!-- 图片 -->
             <template v-if="it.type === 'image'">
-              <div class="thumb" @click.stop="showDetail(it)">
+              <div class="thumb">
                 <img v-if="imageThumbs[it.id]" :src="imageThumbs[it.id]" />
                 <div v-else class="thumb-ph"><ImageIcon :size="20" /></div>
               </div>
@@ -504,9 +607,13 @@ function onWindowBlur() {
               </div>
             </template>
             <!-- 文本/代码/链接 -->
-            <div v-else class="item-preview" @click.stop="showDetail(it)">{{ it.preview || t('empty2') }}</div>
+            <div v-else class="item-preview">
+              <span v-if="it.note" class="note-tag"><Edit3 :size="13" /> {{ it.note }}</span>
+              <template v-else>{{ it.preview || t('empty2') }}</template>
+            </div>
           </div>
         </div>
+        <div v-if="loadingMore" class="loading-more">{{ t('loading') }}</div>
       </main>
 
       <!-- 回到顶部 -->
@@ -548,6 +655,7 @@ function onWindowBlur() {
           <button @click="ctxPaste"><Copy :size="14" /> {{ t('paste') }}</button>
           <button @click="ctxCopy"><Copy :size="14" /> {{ t('copy') }}</button>
           <button @click="ctxDetail"><Eye :size="14" /> {{ t('viewDetail') }}</button>
+          <button @click="ctxNote"><Edit3 :size="14" /> {{ t('note') }}</button>
           <div class="ctx-sep"></div>
           <button @click="ctxFav">
             <Star :size="14" /> {{ ctxMenu.item?.favorite ? t('unfavorite') : t('favorite') }}
@@ -579,6 +687,23 @@ function onWindowBlur() {
           <div class="confirm-actions">
             <button class="cbtn cbtn-cancel" @click="onConfirmCancel">{{ t('cancel') }}</button>
             <button class="cbtn cbtn-ok" @click="onConfirmOk">{{ t('ok') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+    <!-- 备注弹窗 -->
+    <Transition name="fade">
+      <div v-if="noteVisible" class="confirm-mask" @click.self="onNoteCancel">
+        <div class="note-box">
+          <div class="note-head">
+            <span>{{ t('note') }}</span>
+            <button class="note-close" @click="onNoteCancel"><span style="font-size:16px;color:#a8adbd">✕</span></button>
+          </div>
+          <input class="note-input" v-model="noteText" :placeholder="t('noteHint')"
+            @keydown.enter="onNoteOk" @keydown.escape="onNoteCancel" autofocus />
+          <div class="confirm-actions">
+            <button class="cbtn cbtn-cancel" @click="onNoteCancel">{{ t('cancel') }}</button>
+            <button class="cbtn cbtn-primary" @click="onNoteOk">{{ t('ok') }}</button>
           </div>
         </div>
       </div>
@@ -632,6 +757,16 @@ html, body, #app {
 .search { flex: 1; display: flex; align-items: center; gap: 6px; background: var(--bg-elevated); border-radius: 8px; padding: 6px 10px; }
 .search input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-size: 14px; }
 .search-icon { color: var(--text-muted); flex-shrink: 0; }
+.search-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  background: var(--text-muted); color: var(--bg-elevated);
+  border: none; border-radius: 50%;
+  cursor: pointer; flex-shrink: 0;
+  opacity: .75; transition: opacity .15s, background-color .15s;
+}
+.search-clear:hover { opacity: 1; background: var(--text-secondary); }
+.search-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .icon-btn {
   background: transparent; border: 1px solid var(--border); color: var(--text-secondary);
   width: 34px; height: 34px; border-radius: 8px; cursor: pointer;
@@ -653,6 +788,7 @@ html, body, #app {
 .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .empty-icon { color: #2a2f3a; }
 .empty .hint { font-size: 12px; opacity: .6; }
+.loading-more { text-align: center; padding: 12px; font-size: 12px; color: var(--text-muted); }
 
 .item {
   display: flex; flex-direction: column; gap: 6px;
@@ -696,6 +832,11 @@ html, body, #app {
   cursor: pointer;
 }
 .item-preview:hover { }
+.note-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-weight: 600; color: var(--text);
+}
+.note-tag svg { color: var(--accent); flex-shrink: 0; }
 
 .thumb {
   width: 140px; height: 90px; border-radius: 6px;
@@ -798,4 +939,20 @@ html, body, #app {
 .cbtn-cancel:hover { background: var(--bg-hover); color: var(--text); }
 .cbtn-ok { background: var(--danger); color: #fff; }
 .cbtn-ok:hover { background: #dc2626; }
+.cbtn-primary { background: var(--accent); color: #fff; }
+.cbtn-primary:hover { background: var(--accent-hover); }
+
+/* 备注弹窗 */
+.note-box {
+  background: var(--bg-elevated); border-radius: 12px; padding: 18px 20px;
+  width: 360px; box-shadow: 0 8px 30px rgba(0,0,0,.3);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.note-head { display: flex; justify-content: space-between; align-items: center; }
+.note-head span { font-size: 15px; font-weight: 600; color: var(--text); }
+.note-close { background: transparent; border: none; cursor: pointer; padding: 0; }
+.note-input {
+  background: var(--bg); border: 1.5px solid var(--accent); color: var(--text);
+  padding: 8px 12px; border-radius: 6px; font-size: 14px; outline: none;
+}
 </style>

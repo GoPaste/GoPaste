@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   GetSettings,
   UpdateSettings,
@@ -8,9 +8,9 @@ import {
   DataDir,
 } from '../../wailsjs/go/main/App'
 import {
-  ArrowLeft, Settings as SettingsIcon, Keyboard, ClipboardList,
-  Download, Trash2, Check, Info, Database, Shield,
-  Monitor, MousePointer, RotateCcw, FolderOpen, X, Globe,
+  Settings as SettingsIcon, Keyboard, ClipboardList,
+  Download, Trash2, Info, Database, Shield,
+  MousePointer, RotateCcw, FolderOpen, X, Move,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
@@ -35,8 +35,7 @@ const form = reactive({
   maxDays: 30,
   theme: 'dark',
   language: 'zh' as Lang,
-  autoPaste: true,
-  hideOnPaste: true,
+  pasteTrigger: 'double' as 'single' | 'double',
   windowPosition: 'center',
   scrollTopOnShow: true,
   resetFilterOnShow: true,
@@ -46,9 +45,10 @@ const form = reactive({
 })
 
 const dataDir = ref('')
-const saving = ref(false)
 const saveMsg = ref('')
 const recording = ref(false)
+// 标记初次 load 完成前不触发自动保存
+const loaded = ref(false)
 
 const hotkeyDisplay = computed(() => {
   const parts = [...form.hotkeyModifiers.map(m => m.charAt(0).toUpperCase() + m.slice(1))]
@@ -75,8 +75,7 @@ async function load() {
   form.theme = s.theme || 'dark'
   form.language = (s.language || 'zh') as Lang
   lang.value = form.language
-  form.autoPaste = !!s.autoPaste
-  form.hideOnPaste = !!s.hideOnPaste
+  form.pasteTrigger = (s.pasteTrigger === 'single' ? 'single' : 'double')
   form.windowPosition = s.windowPosition || 'center'
   form.scrollTopOnShow = s.scrollTopOnShow !== false
   form.resetFilterOnShow = s.resetFilterOnShow !== false
@@ -84,11 +83,12 @@ async function load() {
   form.showTrayIcon = s.showTrayIcon !== false
   form.showTaskbarIcon = !!s.showTaskbarIcon
   dataDir.value = await DataDir()
+  // load 完成后再允许自动保存，避免 watch 初始触发回写
+  loaded.value = true
 }
 
-async function save() {
-  saving.value = true
-  saveMsg.value = ''
+// 将当前 form 同步到后端。调用方负责做必要的值校验。
+async function autoSave() {
   try {
     await UpdateSettings({
       hotkeyModifiers: form.hotkeyModifiers,
@@ -97,8 +97,7 @@ async function save() {
       maxDays: Number(form.maxDays),
       theme: form.theme,
       language: form.language,
-      autoPaste: form.autoPaste,
-      hideOnPaste: form.hideOnPaste,
+      pasteTrigger: form.pasteTrigger,
       windowPosition: form.windowPosition,
       scrollTopOnShow: form.scrollTopOnShow,
       resetFilterOnShow: form.resetFilterOnShow,
@@ -107,13 +106,40 @@ async function save() {
       showTaskbarIcon: form.showTaskbarIcon,
     } as any)
     saveMsg.value = t('saved')
-    setTimeout(() => (saveMsg.value = ''), 2000)
+    setTimeout(() => { saveMsg.value = '' }, 1500)
   } catch (e: any) {
     saveMsg.value = t('saveFailed') + (e?.message || e)
-  } finally {
-    saving.value = false
   }
 }
+
+// 立即保存（用于 toggle/seg-ctrl/hotkey 这类离散变更）
+function watchImmediate<T>(getter: () => T) {
+  watch(getter, () => { if (loaded.value) autoSave() })
+}
+
+// 数值输入失焦时保存：规范化非法值（空/负数 -> 0），避免写入中间态
+function onNumberBlur(field: 'maxItems' | 'maxDays') {
+  const raw = form[field] as unknown
+  let n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) n = 0
+  n = Math.floor(n)
+  form[field] = n
+  if (loaded.value) autoSave()
+}
+
+// 所有离散字段：变更即写盘
+watchImmediate(() => form.theme)
+watchImmediate(() => form.language)
+watchImmediate(() => form.pasteTrigger)
+watchImmediate(() => form.windowPosition)
+watchImmediate(() => form.scrollTopOnShow)
+watchImmediate(() => form.resetFilterOnShow)
+watchImmediate(() => form.silentStart)
+watchImmediate(() => form.showTrayIcon)
+watchImmediate(() => form.showTaskbarIcon)
+watchImmediate(() => form.hotkeyKey)
+watchImmediate(() => form.hotkeyModifiers.join('+'))
+// 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
 
 async function doExport() {
   const json = await ExportData()
@@ -254,60 +280,21 @@ onMounted(load)
           </div>
         </div>
 
-        <button class="btn-primary" :disabled="saving" @click="save">
-          <Check :size="14" />
-          {{ saving ? t('saving') : t('saveSettings') }}
-        </button>
-        <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
+        <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>
 
       <!-- 剪贴板 -->
       <div v-if="activeTab === 'clipboard'" class="panel">
         <div class="field">
           <label><MousePointer :size="14" /> {{ t('pasteBehavior') }}</label>
-        </div>
-        <div class="section-card">
-          <div class="card-row">
-            <span>{{ t('autoPasteLabel') }}</span>
-            <label class="toggle"><input type="checkbox" v-model="form.autoPaste" /><span class="slider"></span></label>
+          <div class="seg-ctrl">
+            <button :class="{ active: form.pasteTrigger === 'single' }" @click="form.pasteTrigger = 'single'">{{ t('triggerSingle') }}</button>
+            <button :class="{ active: form.pasteTrigger === 'double' }" @click="form.pasteTrigger = 'double'">{{ t('triggerDouble') }}</button>
           </div>
-          <div class="card-row">
-            <span>{{ t('hideOnPasteLabel') }}</span>
-            <label class="toggle"><input type="checkbox" v-model="form.hideOnPaste" /><span class="slider"></span></label>
-          </div>
+          <p class="desc">{{ t('pasteTriggerDesc') }}</p>
         </div>
         <div class="field">
-          <label><Shield :size="14" /> {{ t('dataSecurity') }}</label>
-          <p class="desc">{{ t('dataSecurityDesc') }}</p>
-        </div>
-        <div class="field">
-          <label><FolderOpen :size="14" /> {{ t('dataDir') }}</label>
-          <code class="path">{{ dataDir }}</code>
-        </div>
-        <div class="field">
-          <label>{{ t('maxItems') }}</label>
-          <div class="input-group">
-            <input type="number" min="0" v-model="form.maxItems" />
-            <span class="unit">{{ t('maxItemsUnit') }}</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>{{ t('maxDays') }}</label>
-          <div class="input-group">
-            <input type="number" min="0" v-model="form.maxDays" />
-            <span class="unit">{{ t('maxDaysUnit') }}</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>{{ t('cleanData') }}</label>
-          <button class="btn-danger" @click="doClear">
-            <Trash2 :size="14" />
-            {{ t('clearUnfav') }}
-          </button>
-        </div>
-
-        <div class="field">
-          <label>{{ t('windowPosition') }}</label>
+          <label><Move :size="14" /> {{ t('windowPosition') }}</label>
           <div class="seg-ctrl">
             <button :class="{ active: form.windowPosition === 'follow' }" @click="form.windowPosition = 'follow'">{{ t('wpFollow') }}</button>
             <button :class="{ active: form.windowPosition === 'remember' }" @click="form.windowPosition = 'remember'">{{ t('wpRemember') }}</button>
@@ -328,11 +315,7 @@ onMounted(load)
           </div>
         </div>
 
-        <button class="btn-primary" :disabled="saving" @click="save">
-          <Check :size="14" />
-          {{ saving ? t('saving') : t('saveSettings') }}
-        </button>
-        <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
+        <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>
 
       <!-- 快捷键 -->
@@ -349,15 +332,42 @@ onMounted(load)
           <p class="desc" style="white-space:pre-line">{{ t('shortcutDesc') }}</p>
         </div>
 
-        <button class="btn-primary" :disabled="saving" @click="save">
-          <Check :size="14" />
-          {{ saving ? t('saving') : t('saveShortcut') }}
-        </button>
-        <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
+        <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>
 
-      <!-- 备份 -->
+      <!-- 数据管理 -->
       <div v-if="activeTab === 'backup'" class="panel">
+        <div class="field">
+          <label><Shield :size="14" /> {{ t('dataSecurity') }}</label>
+          <p class="desc">{{ t('dataSecurityDesc') }}</p>
+        </div>
+        <div class="field">
+          <label><FolderOpen :size="14" /> {{ t('dataDir') }}</label>
+          <code class="path">{{ dataDir }}</code>
+        </div>
+        <div class="field">
+          <label>{{ t('maxItems') }}</label>
+          <div class="input-group">
+            <input
+              type="number" min="0" v-model="form.maxItems"
+              @blur="onNumberBlur('maxItems')"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
+            <span class="unit">{{ t('maxItemsUnit') }}</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>{{ t('maxDays') }}</label>
+          <div class="input-group">
+            <input
+              type="number" min="0" v-model="form.maxDays"
+              @blur="onNumberBlur('maxDays')"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            />
+            <span class="unit">{{ t('maxDaysUnit') }}</span>
+          </div>
+        </div>
+
         <div class="field">
           <label><Download :size="14" /> {{ t('exportData') }}</label>
           <p class="desc">{{ t('exportDesc') }}</p>
@@ -370,6 +380,15 @@ onMounted(load)
           <label><RotateCcw :size="14" /> {{ t('importData') }}</label>
           <p class="desc">{{ t('importDesc') }}</p>
         </div>
+        <div class="field">
+          <label>{{ t('cleanData') }}</label>
+          <button class="btn-danger" @click="doClear">
+            <Trash2 :size="14" />
+            {{ t('clearUnfav') }}
+          </button>
+        </div>
+
+        <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>
 
       <!-- 关于 -->
@@ -498,6 +517,18 @@ onMounted(load)
 .btn-danger:hover { background: rgba(239,68,68,.1); }
 
 .save-msg { font-size: 12px; color: var(--success); margin-left: 10px; }
+.save-msg.floating {
+  position: fixed; right: 18px; bottom: 14px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.12);
+  margin-left: 0; z-index: 20;
+  animation: save-pop .18s ease-out;
+}
+@keyframes save-pop {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
 .hotkey-recorder {
   display: flex; align-items: center; gap: 10px;
@@ -538,11 +569,11 @@ onMounted(load)
 .link-row code { font-size: 12px; background: var(--bg-elevated); padding: 2px 6px; border-radius: 3px; }
 
 .seg-ctrl {
-  display: inline-flex; border-radius: 8px; overflow: hidden;
-  border: 1px solid var(--border); background: var(--bg);
+  display: inline-flex; flex-shrink: 0; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border); background: var(--bg); white-space: nowrap;
 }
 .seg-ctrl button {
-  padding: 6px 16px; font-size: 13px;
+  padding: 6px 16px; font-size: 13px; white-space: nowrap;
   background: transparent; border: none; color: var(--text-secondary);
   cursor: pointer; transition: all .15s;
 }
@@ -567,11 +598,11 @@ onMounted(load)
 .card-row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 14px; font-size: 13px; color: var(--text);
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light); gap: 8px;
 }
 .card-row:last-child { border-bottom: none; }
 .card-row.disabled { opacity: .45; pointer-events: none; }
-.card-row > div { display: flex; flex-direction: column; gap: 2px; }
+.card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; }
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }
 
 /* Badge */

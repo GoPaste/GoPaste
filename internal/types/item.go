@@ -28,6 +28,7 @@ type Item struct {
 	CharCount int       `json:"charCount"`                   // 字符数（文本类）/ 像素信息（图片由 Preview 表达）
 	Pinned    bool      `gorm:"index" json:"pinned"`
 	Favorite  bool      `gorm:"index" json:"favorite"`
+	Note      string    `gorm:"size:256" json:"note"` // 用户备注（显示时优先于 preview）
 	SourceApp string    `gorm:"size:128" json:"sourceApp"`
 	CreatedAt time.Time `gorm:"index" json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

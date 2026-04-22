@@ -259,6 +259,11 @@ func (r *Repo) SetFavorite(id int64, favorite bool) error {
 	return r.db.Model(&types.Item{}).Where("id = ?", id).Update("favorite", favorite).Error
 }
 
+// SetNote 设置备注。
+func (r *Repo) SetNote(id int64, note string) error {
+	return r.db.Model(&types.Item{}).Where("id = ?", id).Update("note", note).Error
+}
+
 // Count 返回总条数。
 func (r *Repo) Count() (int64, error) {
 	var n int64

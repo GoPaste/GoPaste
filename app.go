@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"gopaste/internal/clipboard"
 	"gopaste/internal/config"
 	"gopaste/internal/crypto"
+	"gopaste/internal/cursor"
 	"gopaste/internal/hotkey"
 	"gopaste/internal/paste"
 	"gopaste/internal/settings"
@@ -46,25 +48,42 @@ type App struct {
 	// 记住窗口位置
 	lastX, lastY int
 	posInited    bool
+
+	// 记住"显示面板时"的前台窗口，用于粘贴时恢复焦点
+	prevFocus   paste.PreviousWindow
+	prevFocusMu sync.Mutex
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
+// 默认 logger 写 io.Discard（Windows GUI 子系统下 stdout 不可用，写它会失败导致日志被吞）。
 func NewApp() *App {
+	bootProbeApp("NewApp")
 	return &App{
-		log: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		log: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}
 }
 
+// bootProbeApp 转发到 main 包级 bootProbe（同包，不需要导入）。
+func bootProbeApp(stage string) { bootProbe(stage) }
+
 // startup 初始化各子系统。
 func (a *App) startup(ctx context.Context) {
+	bootProbeApp("startup: enter")
 	a.ctx = ctx
 
 	paths, err := config.ResolvePaths()
 	if err != nil {
+		bootProbeApp("startup: ResolvePaths err=" + err.Error())
 		a.log.Error("resolve paths", "err", err)
 		return
 	}
 	a.paths = paths
+	bootProbeApp("startup: paths.Root=" + paths.Root)
+
+	// 0) 初始化文件日志：~/AppData/Roaming/gopaste/gopaste.log（其它平台同理在 paths.Root 下）
+	a.initFileLogger(paths.Root)
+	bootProbeApp("startup: initFileLogger done")
+	a.log.Info("startup", "root", paths.Root, "os", runtime.GOOS)
 
 	// 1) 加解密
 	key, err := crypto.LoadOrCreateKey(paths.Key)
@@ -220,6 +239,72 @@ func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
 	wailsruntime.EventsEmit(ctx, "clipboard:new", notice)
 }
 
+// clampToScreen 约束窗口坐标在屏幕可见工作区内（排除任务栏等系统 UI）。
+// 输入：绝对屏幕坐标 (x, y)。
+// 返回：(absX, absY, workLeft, workTop)
+//   - absX/absY 为夹紧后的绝对屏幕坐标；
+//   - workLeft/workTop 为工作区原点。Wails v2 在 Windows 下 WindowSetPosition 的入参
+//     是「相对工作区」的坐标（Wails 内部会再加上 workArea.Left/Top），因此调用方
+//     需要传入 absX-workLeft, absY-workTop。其他平台 workLeft/workTop 为 0。
+// margin 为四周保留的安全边距，避免阴影/边框被屏幕或任务栏切到。
+func (a *App) clampToScreen(x, y int) (int, int, int, int) {
+	w, h := wailsruntime.WindowGetSize(a.ctx)
+
+	// 优先使用系统工作区（Windows 会排除任务栏）
+	var sx, sy, sw, sh int
+	wx, wy, ww, wh := cursor.WorkArea()
+	if ww > 0 && wh > 0 {
+		sx, sy, sw, sh = wx, wy, ww, wh
+	} else {
+		// fallback：用 Wails 返回的屏幕总尺寸
+		screens, err := wailsruntime.ScreenGetAll(a.ctx)
+		if err != nil || len(screens) == 0 {
+			return x, y, 0, 0
+		}
+		for _, sc := range screens {
+			if sc.IsCurrent {
+				sw, sh = sc.Size.Width, sc.Size.Height
+				break
+			}
+		}
+		if sw == 0 {
+			sw, sh = screens[0].Size.Width, screens[0].Size.Height
+		}
+	}
+
+	const margin = 8
+	minX := sx + margin
+	minY := sy + margin
+	maxX := sx + sw - w - margin
+	maxY := sy + sh - h - margin
+	if maxX < minX {
+		maxX = minX
+	}
+	if maxY < minY {
+		maxY = minY
+	}
+	if x < minX {
+		x = minX
+	}
+	if y < minY {
+		y = minY
+	}
+	if x > maxX {
+		x = maxX
+	}
+	if y > maxY {
+		y = maxY
+	}
+	return x, y, sx, sy
+}
+
+// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置，自动适配 Wails 在
+// Windows 下 WindowSetPosition 使用「工作区相对坐标」的差异。
+func (a *App) setWindowPosAbsolute(absX, absY int) {
+	x, y, workLeft, workTop := a.clampToScreen(absX, absY)
+	wailsruntime.WindowSetPosition(a.ctx, x-workLeft, y-workTop)
+}
+
 // positionWindow 根据设置决定窗口出现位置。
 func (a *App) positionWindow() {
 	s := settings.Default()
@@ -227,10 +312,18 @@ func (a *App) positionWindow() {
 		s = a.settings.Get()
 	}
 	switch s.WindowPosition {
-	case "follow", "remember":
-		// 跟随鼠标和记住位置都使用上次保存的坐标
+	case "follow":
+		// 跟随鼠标：窗口左上角对齐鼠标位置
+		mx, my := cursor.Position()
+		if mx > 0 || my > 0 {
+			a.setWindowPosAbsolute(mx, my)
+		} else {
+			wailsruntime.WindowCenter(a.ctx)
+		}
+	case "remember":
+		// 记住位置：恢复上次保存的坐标
 		if a.posInited {
-			wailsruntime.WindowSetPosition(a.ctx, a.lastX, a.lastY)
+			a.setWindowPosAbsolute(a.lastX, a.lastY)
 		} else {
 			wailsruntime.WindowCenter(a.ctx)
 		}
@@ -250,19 +343,6 @@ func (a *App) saveWindowPosition() {
 	a.posInited = true
 }
 
-// SetMousePosition 前端在快捷键触发时传入鼠标坐标（用于 follow 模式）。
-func (a *App) SetMousePosition(x, y int) {
-	s := settings.Default()
-	if a.settings != nil {
-		s = a.settings.Get()
-	}
-	if s.WindowPosition == "follow" {
-		a.lastX = x
-		a.lastY = y
-		a.posInited = true
-	}
-}
-
 // togglePanel 切换主窗口的可见状态：若已显示则隐藏，否则显示并置顶。
 // 由托盘左键点击和全局快捷键共享。
 func (a *App) togglePanel() {
@@ -270,6 +350,7 @@ func (a *App) togglePanel() {
 		return
 	}
 	if wailsruntime.WindowIsMinimised(a.ctx) {
+		a.captureFocusBeforeShow()
 		wailsruntime.WindowUnminimise(a.ctx)
 		wailsruntime.WindowShow(a.ctx)
 		a.positionWindow()
@@ -285,6 +366,7 @@ func (a *App) togglePanel() {
 		wailsruntime.WindowHide(a.ctx)
 		a.setVisible(false)
 	} else {
+		a.captureFocusBeforeShow()
 		wailsruntime.WindowShow(a.ctx)
 		a.positionWindow()
 		a.setVisible(true)
@@ -299,15 +381,62 @@ func (a *App) showPanel() {
 	if wailsruntime.WindowIsMinimised(a.ctx) {
 		wailsruntime.WindowUnminimise(a.ctx)
 	}
+	a.captureFocusBeforeShow()
 	wailsruntime.WindowShow(a.ctx)
 	a.positionWindow()
 	a.setVisible(true)
+}
+
+// captureFocusBeforeShow 在窗口显示前抓住当前前台窗口，便于稍后粘贴时还原焦点。
+// 必须在 WindowShow 之前调用，否则抓到的就是本应用自己。
+func (a *App) captureFocusBeforeShow() {
+	pw, err := paste.CapturePreviousWindow()
+	if err != nil {
+		a.log.Warn("focus: capture failed", "err", err)
+		return
+	}
+	a.prevFocusMu.Lock()
+	a.prevFocus = pw
+	a.prevFocusMu.Unlock()
+	bootProbeApp(fmt.Sprintf("focus: captured prev window valid=%v", pw.IsValid()))
+}
+
+// takePrevFocus 取出并清空记录的前一个窗口。
+func (a *App) takePrevFocus() paste.PreviousWindow {
+	a.prevFocusMu.Lock()
+	defer a.prevFocusMu.Unlock()
+	pw := a.prevFocus
+	a.prevFocus = paste.PreviousWindow{}
+	return pw
 }
 
 func (a *App) setVisible(v bool) {
 	a.visMu.Lock()
 	a.windowVisible = v
 	a.visMu.Unlock()
+}
+
+// initFileLogger 把日志写到 <root>/gopaste.log。
+// Windows GUI 子系统下 os.Stdout 不可用，因此只写文件；如果文件无法打开，则把
+// 错误信息回写到一个保底文本，方便定位"日志为何空的"问题。
+func (a *App) initFileLogger(root string) {
+	if root == "" {
+		return
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		// 写保底文件到临时目录，便于排错
+		_ = os.WriteFile(filepath.Join(os.TempDir(), "gopaste.boot.log"),
+			[]byte(fmt.Sprintf("mkdir %q failed: %v\n", root, err)), 0o600)
+		return
+	}
+	logPath := filepath.Join(root, "gopaste.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_SYNC, 0o600)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(root, "gopaste.boot.log"),
+			[]byte(fmt.Sprintf("open log %q failed: %v\n", logPath, err)), 0o600)
+		return
+	}
+	a.log = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
 // startTray 启动系统托盘。
@@ -365,25 +494,59 @@ func (a *App) CopyToClipboard(id int64) error {
 	return paste.WriteClipboard(t, content)
 }
 
-// PasteItem 写回剪切板并尝试自动粘贴到前台窗口。
+// PasteItem 写回剪切板并粘贴到前台窗口。
+// 流程：写剪贴板 → 隐藏窗口 → 等焦点切换 → 发送 Ctrl/Cmd+V
+// 是否由单击还是双击触发，由前端根据 PasteTrigger 设置绑定事件决定。
 func (a *App) PasteItem(id int64) error {
+	bootProbeApp(fmt.Sprintf("PasteItem: enter id=%d", id))
+	a.log.Info("paste: enter", "id", id)
 	if err := a.CopyToClipboard(id); err != nil {
+		bootProbeApp("PasteItem: copy err=" + err.Error())
+		a.log.Warn("paste: copy to clipboard failed", "id", id, "err", err)
 		return err
 	}
 	s := settings.Default()
 	if a.settings != nil {
 		s = a.settings.Get()
 	}
-	if s.HideOnPaste && a.ctx != nil {
+	bootProbeApp(fmt.Sprintf("PasteItem: ready trigger=%s", s.PasteTrigger))
+	a.log.Info("paste: ready", "id", id, "pasteTrigger", s.PasteTrigger)
+
+	// 取出展示前抓到的"前一个窗口"
+	prev := a.takePrevFocus()
+	prevValid := prev.IsValid()
+	bootProbeApp(fmt.Sprintf("PasteItem: prevFocus valid=%v", prevValid))
+
+	// 隐藏面板，让出前台
+	if a.ctx != nil {
+		a.saveWindowPosition()
 		wailsruntime.WindowHide(a.ctx)
-		// 让焦点回到上一个窗口后再发送按键
+		a.setVisible(false)
+	}
+
+	// 把焦点切回前一个应用——Windows/Linux 在 WindowHide 后焦点不会自动回到上一个窗口，
+	// 必须显式 SetForegroundWindow / activate；否则 Ctrl+V 发到桌面，永远粘不出来。
+	if prevValid {
+		// 给系统一点时间处理 Hide
 		time.Sleep(80 * time.Millisecond)
-	}
-	if s.AutoPaste {
-		if err := paste.SendPaste(); err != nil {
-			a.log.Warn("send paste", "err", err)
+		if err := paste.RestorePreviousWindow(prev); err != nil {
+			bootProbeApp("PasteItem: restore focus err=" + err.Error())
+			a.log.Warn("paste: restore focus failed", "err", err)
+		} else {
+			bootProbeApp("PasteItem: focus restored")
 		}
+	} else {
+		// 没抓到（首次 / 异常）只能盲目等焦点漂回去
+		time.Sleep(150 * time.Millisecond)
 	}
+
+	if err := paste.SendPaste(); err != nil {
+		bootProbeApp("PasteItem: SendPaste err=" + err.Error())
+		a.log.Warn("paste: send paste failed", "err", err)
+		return err
+	}
+	bootProbeApp(fmt.Sprintf("PasteItem: sent id=%d", id))
+	a.log.Info("paste: sent", "id", id)
 	return nil
 }
 
@@ -411,6 +574,14 @@ func (a *App) ToggleFavorite(id int64, favorite bool) error {
 	return a.repo.SetFavorite(id, favorite)
 }
 
+// SetNote 设置/更新条目的备注。传空字符串清除备注。
+func (a *App) SetNote(id int64, note string) error {
+	if a.repo == nil {
+		return fmt.Errorf("storage not ready")
+	}
+	return a.repo.SetNote(id, note)
+}
+
 // ClearHistory 清空非收藏非置顶的历史。
 func (a *App) ClearHistory() error {
 	if a.repo == nil {
@@ -422,6 +593,7 @@ func (a *App) ClearHistory() error {
 // HideWindow 隐藏窗口。
 func (a *App) HideWindow() {
 	if a.ctx != nil {
+		a.saveWindowPosition()
 		wailsruntime.WindowHide(a.ctx)
 		a.setVisible(false)
 	}
