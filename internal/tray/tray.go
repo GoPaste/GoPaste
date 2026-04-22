@@ -26,6 +26,16 @@ var iconICO []byte
 //go:embed icon.png
 var iconPNG []byte
 
+// iconTemplatePNG 专供 macOS 状态栏使用的模板图标：
+//   - 背景完全透明，主体为黑色 "P" 剪影；
+//   - 系统会按菜单栏深浅主题自动反色渲染。
+// 这张图由 build/gen_tray_icon.go 生成，尺寸 44×44（22pt @2x）。
+// 原 icon.png 是彩色 app 图标，直接喂给 SetTemplateIcon 会被系统全染成
+// 一整块纯色，表现为"状态栏上一个白色/黑色方块"。
+//
+//go:embed icon_template.png
+var iconTemplatePNG []byte
+
 // Start 启动系统托盘。
 //
 //   - macOS：NSApp 已被 Wails 持有主线程，必须使用 RunWithExternalLoop，
@@ -39,10 +49,14 @@ func Start(cb Callbacks) (cleanup func()) {
 	onReady := func() {
 		if runtime.GOOS == "windows" {
 			systray.SetIcon(iconICO)
+		} else if runtime.GOOS == "darwin" {
+			// macOS：模板图标必须是"黑色剪影 + 透明背景"，系统会按深浅主题
+			// 自动反色。彩色 app 图标（iconPNG）不能直接当模板，否则会被
+			// 统一染成一整块纯色方块。
+			systray.SetTemplateIcon(iconTemplatePNG, iconTemplatePNG)
 		} else {
-			// macOS：使用模板图标，系统会按菜单栏深浅主题自动着色，
-			// 也能得到正确的菜单栏显示尺寸（≈22pt）。
-			systray.SetTemplateIcon(iconPNG, iconPNG)
+			// Linux：大多数桌面环境能直接显示彩色 PNG。
+			systray.SetIcon(iconPNG)
 		}
 		systray.SetTitle("")
 		systray.SetTooltip("GoPaste · 剪切板管理")

@@ -20,14 +20,18 @@ type FileInfo struct {
 // FileWatcher 监听系统剪切板中的文件复制事件。
 // 各平台由 filewatcher_<os>.go 实现 pollFiles()。
 type FileWatcher struct {
-	out     chan types.Item
-	lastSig string
+	out        chan types.Item
+	lastSig    string
+	suppressor *Suppressor // 与 text Watcher 共享，检测到文件后抑制对应文本入库
 }
 
 // NewFileWatcher 创建文件剪切板监听器。
 func NewFileWatcher() *FileWatcher {
 	return &FileWatcher{out: make(chan types.Item, 16)}
 }
+
+// SetSuppressor 绑定共享抑制器。
+func (fw *FileWatcher) SetSuppressor(s *Suppressor) { fw.suppressor = s }
 
 // Events 返回文件事件通道。
 func (fw *FileWatcher) Events() <-chan types.Item { return fw.out }
@@ -58,6 +62,11 @@ func (fw *FileWatcher) handleFiles(files []FileInfo) {
 	var paths []string
 	for _, f := range files {
 		paths = append(paths, f.Path)
+	}
+	// 尽早登记到共享抑制器：即使本次签名与上次相同（重复复制同一文件），
+	// 也要刷新抑制窗口，避免被后续路径文本污染历史。
+	if fw.suppressor != nil {
+		fw.suppressor.MarkFiles(paths)
 	}
 	sig := storage.HashBytes([]byte(strings.Join(paths, "\n")))
 	if sig == fw.lastSig {

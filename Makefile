@@ -57,16 +57,16 @@ build-win-arm: ## 构建 Windows (arm64)
 
 build-mac: ## 构建 macOS (universal) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建（Wails 限制）$(RESET)"; echo "  推荐使用 GitHub Actions: git tag v0.1.0 && git push --tags"; exit 1; fi
-	$(WAILS) build -clean -platform darwin/universal $(WAILS_FLAGS)
+	unset GOROOT; $(WAILS) build -clean -platform darwin/universal $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).app$(RESET)"
 
 build-mac-arm: ## 构建 macOS (Apple Silicon) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
-	$(WAILS) build -clean -platform darwin/arm64 $(WAILS_FLAGS)
+	unset GOROOT; $(WAILS) build -clean -platform darwin/arm64 $(WAILS_FLAGS)
 
 build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
-	$(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
+	unset GOROOT; $(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
 
 build-linux: ## 构建 Linux (amd64)
 	xvfb-run -a $(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)

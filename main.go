@@ -73,6 +73,8 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
+		// Mac 下会被 Mac.WindowIsTranslucent=true 覆盖成透明；
+		// Windows/Linux 下保留原有不透明背景色。
 		BackgroundColour: &options.RGBA{R: 20, G: 22, B: 28, A: 1},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,

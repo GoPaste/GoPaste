@@ -60,3 +60,8 @@ func pollFiles() []FileInfo {
 	}
 	return files
 }
+
+// pasteboardHasFile Linux 上使用 xclip/wl-paste 各自的查询开销较大，
+// 这里简单返回 false——依赖 Suppressor 的路径匹配即可（Linux 上文件事件一般只
+// 提供完整路径而不是 basename，匹配率较高）。
+func pasteboardHasFile() bool { return false }

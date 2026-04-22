@@ -77,3 +77,9 @@ func pollFiles() []FileInfo {
 	}
 	return files
 }
+
+// pasteboardHasFile Windows 上通过 IsClipboardFormatAvailable(CF_HDROP) 快速判断。
+func pasteboardHasFile() bool {
+	ret, _, _ := isClipboardFmtAvail.Call(uintptr(cfHDROP))
+	return ret != 0
+}

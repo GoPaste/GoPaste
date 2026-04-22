@@ -52,6 +52,16 @@ type App struct {
 	// 记住"显示面板时"的前台窗口，用于粘贴时恢复焦点
 	prevFocus   paste.PreviousWindow
 	prevFocusMu sync.Mutex
+
+	// 粘贴操作串行化：
+	// 用户双击/回车可能触发快速重入，或前端事件抖动连击会并发调用 PasteItem；
+	// 同一时刻若有两条粘贴流水线交错，会同时：
+	//   1) 触碰 NSWorkspace/NSRunningApplication（AppKit 主线程断言）
+	//   2) 并发 fork+exec osascript
+	//   3) 并发 WindowHide / 焦点还原
+	// 在 macOS 上实测会触发硬崩（进程被系统直接杀掉，不写 panic）。
+	// 这里用 TryLock 保证同时只有一次 PasteItem 在跑，重入直接忽略。
+	pasteMu sync.Mutex
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
@@ -125,7 +135,12 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// 4) 剪切板监听（文本 + 图片）
+	// 共享抑制器：FileWatcher 检测到文件后，短时间内让文本 Watcher 跳过对应路径文本，
+	// 避免同一次复制同时产生 file / text 两条历史。
+	suppressor := clipboard.NewSuppressor()
+
 	w := clipboard.New()
+	w.SetSuppressor(suppressor)
 	if err := w.Start(ctx); err != nil {
 		a.log.Error("start clipboard watcher", "err", err)
 	} else {
@@ -135,6 +150,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 4b) 文件剪切板监听
 	fw := clipboard.NewFileWatcher()
+	fw.SetSuppressor(suppressor)
 	fw.Start(ctx)
 	a.fileWatch = fw
 	go a.consumeFileEvents(ctx)
@@ -416,6 +432,12 @@ func (a *App) setVisible(v bool) {
 	a.visMu.Unlock()
 }
 
+func (a *App) isVisible() bool {
+	a.visMu.Lock()
+	defer a.visMu.Unlock()
+	return a.windowVisible
+}
+
 // initFileLogger 把日志写到 <root>/gopaste.log。
 // Windows GUI 子系统下 os.Stdout 不可用，因此只写文件；如果文件无法打开，则把
 // 错误信息回写到一个保底文本，方便定位"日志为何空的"问题。
@@ -498,6 +520,24 @@ func (a *App) CopyToClipboard(id int64) error {
 // 流程：写剪贴板 → 隐藏窗口 → 等焦点切换 → 发送 Ctrl/Cmd+V
 // 是否由单击还是双击触发，由前端根据 PasteTrigger 设置绑定事件决定。
 func (a *App) PasteItem(id int64) error {
+	// 防重入：用户双击或 UI 抖动可能连触两次 PasteItem。
+	// 第二次若在第一次还没走完时挤进来，macOS 上会叠加 fork osascript +
+	// AppKit 跨线程调用，触发进程被系统直接 kill（无 crash log）。
+	if !a.pasteMu.TryLock() {
+		bootProbeApp(fmt.Sprintf("PasteItem: skip reentrant id=%d", id))
+		a.log.Info("paste: skip reentrant", "id", id)
+		return nil
+	}
+	defer a.pasteMu.Unlock()
+
+	// 兜底：Go 层任何 panic 都在这里被吞掉并落盘，避免进程直接退出而我们看不到原因。
+	defer func() {
+		if r := recover(); r != nil {
+			bootProbeApp(fmt.Sprintf("PasteItem: PANIC id=%d r=%v", id, r))
+			a.log.Error("paste: panic", "id", id, "recover", r)
+		}
+	}()
+
 	bootProbeApp(fmt.Sprintf("PasteItem: enter id=%d", id))
 	a.log.Info("paste: enter", "id", id)
 	if err := a.CopyToClipboard(id); err != nil {
@@ -517,11 +557,20 @@ func (a *App) PasteItem(id int64) error {
 	prevValid := prev.IsValid()
 	bootProbeApp(fmt.Sprintf("PasteItem: prevFocus valid=%v", prevValid))
 
-	// 隐藏面板，让出前台
-	if a.ctx != nil {
+	// 隐藏面板，让出前台。
+	// 注意：只在"当前确实可见"时才调用 WindowHide。否则在 macOS 下连续调用两次 Hide
+	// （比如上一次粘贴后用户又很快触发了一次）有概率让 Wails 的窗口状态机走进
+	// "最后一个窗口关闭 → applicationShouldTerminateAfterLastWindowClosed:"
+	// 路径，AppKit 直接 [NSApp terminate:] ——进程没走我们的 shutdown、也没
+	// 落 crash report，表现就是"闪退"。
+	if a.ctx != nil && a.isVisible() {
 		a.saveWindowPosition()
+		bootProbeApp("PasteItem: before WindowHide")
 		wailsruntime.WindowHide(a.ctx)
+		bootProbeApp("PasteItem: after WindowHide")
 		a.setVisible(false)
+	} else {
+		bootProbeApp("PasteItem: skip WindowHide (already hidden)")
 	}
 
 	// 把焦点切回前一个应用——Windows/Linux 在 WindowHide 后焦点不会自动回到上一个窗口，
@@ -529,7 +578,10 @@ func (a *App) PasteItem(id int64) error {
 	if prevValid {
 		// 给系统一点时间处理 Hide
 		time.Sleep(80 * time.Millisecond)
-		if err := paste.RestorePreviousWindow(prev); err != nil {
+		bootProbeApp("PasteItem: before RestorePreviousWindow")
+		err := paste.RestorePreviousWindow(prev)
+		bootProbeApp("PasteItem: after RestorePreviousWindow")
+		if err != nil {
 			bootProbeApp("PasteItem: restore focus err=" + err.Error())
 			a.log.Warn("paste: restore focus failed", "err", err)
 		} else {
@@ -540,6 +592,7 @@ func (a *App) PasteItem(id int64) error {
 		time.Sleep(150 * time.Millisecond)
 	}
 
+	bootProbeApp("PasteItem: before SendPaste")
 	if err := paste.SendPaste(); err != nil {
 		bootProbeApp("PasteItem: SendPaste err=" + err.Error())
 		a.log.Warn("paste: send paste failed", "err", err)

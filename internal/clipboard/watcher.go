@@ -25,15 +25,19 @@ const previewLimit = 200
 
 // Watcher 剪切板监听器。
 type Watcher struct {
-	out     chan types.Item
-	lastSig string
-	mu      sync.Mutex
+	out        chan types.Item
+	lastSig    string
+	mu         sync.Mutex
+	suppressor *Suppressor // 与 FileWatcher 共享，用于跳过文件事件附带的路径文本
 }
 
 // New 创建一个 Watcher。
 func New() *Watcher {
 	return &Watcher{out: make(chan types.Item, 32)}
 }
+
+// SetSuppressor 绑定共享的抑制器（可选）。若未设置，文本文件路径不会被去重。
+func (w *Watcher) SetSuppressor(s *Suppressor) { w.suppressor = s }
 
 // Events 返回事件通道。每次剪切板变化（去重后）会推送一个 Item。
 func (w *Watcher) Events() <-chan types.Item { return w.out }
@@ -81,6 +85,23 @@ func (w *Watcher) loop(ctx context.Context, textCh, imageCh <-chan []byte) {
 func (w *Watcher) handle(t types.ItemType, raw []byte) {
 	if len(raw) == 0 {
 		return
+	}
+	// 文件复制去重：
+	//  1) 若当前系统剪切板同时含 fileURL，说明这次变更是一个"文件复制"，
+	//     文本槽位只是 Finder 附带的 basename/path —— 直接丢弃。
+	//     pasteboardHasFile 内部按 changeCount 做缓存，高频调用也廉价。
+	//  2) 若 FileWatcher 已经登记了路径/文件名集合（文件先到、文本后到），
+	//     Suppressor 再兜底匹配一次。
+	// 注意：这里故意不做 time.Sleep 等"延迟重试"，因为阻塞 watcher goroutine
+	// 会导致 golang.design/x/clipboard 的事件堆积以及 CGo 重入频率升高，
+	// 进而在 macOS 上触发 AppKit 异常循环，被系统判定为 CPU 失控。
+	if t != types.TypeImage {
+		if pasteboardHasFile() {
+			return
+		}
+		if w.suppressor != nil && w.suppressor.ShouldSuppressText(raw) {
+			return
+		}
 	}
 	hash := storage.HashBytes(raw)
 
