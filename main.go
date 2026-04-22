@@ -16,11 +16,11 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:             "gopaste",
-		Width:             500,
+		Title:             "GoPaste",
+		Width:             480,
 		Height:            680,
-		MinWidth:          500,
-		MinHeight:         500,
+		MinWidth:          380,
+		MinHeight:         480,
 		DisableResize:     false,
 		Frameless:         true, // 隐藏系统标题栏，由前端绘制
 		StartHidden:       false,

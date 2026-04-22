@@ -45,7 +45,7 @@ func Start(cb Callbacks) (cleanup func()) {
 			systray.SetTemplateIcon(iconPNG, iconPNG)
 		}
 		systray.SetTitle("")
-		systray.SetTooltip("gopaste · 剪切板管理")
+		systray.SetTooltip("GoPaste · 剪切板管理")
 
 		// 左键单击图标 → 显示/隐藏主面板
 		systray.SetOnTapped(func() {
@@ -55,15 +55,15 @@ func Start(cb Callbacks) (cleanup func()) {
 		})
 
 		// 右键菜单项
-		mShow := systray.AddMenuItem("显示主面板", "打开 gopaste 主窗口")
+		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
 		systray.AddSeparator()
 		mOpenDir := systray.AddMenuItem("打开数据目录", "在文件管理器中打开")
 		mClear := systray.AddMenuItem("清空历史", "清空未收藏/未置顶的历史")
 		systray.AddSeparator()
-		mAbout := systray.AddMenuItem("关于 gopaste", "版本与项目信息")
+		mAbout := systray.AddMenuItem("关于 GoPaste", "版本与项目信息")
 		systray.AddSeparator()
-		mRestart := systray.AddMenuItem("重启 gopaste", "重新启动应用")
-		mQuit := systray.AddMenuItem("退出 gopaste", "完全关闭应用")
+		mRestart := systray.AddMenuItem("重启 GoPaste", "重新启动应用")
+		mQuit := systray.AddMenuItem("退出 GoPaste", "完全关闭应用")
 
 		go func() {
 			for {
@@ -103,13 +103,6 @@ func Start(cb Callbacks) (cleanup func()) {
 
 	onExit := func() {}
 
-	if runtime.GOOS == "windows" {
-		go systray.Run(onReady, onExit)
-		return func() { systray.Quit() }
-	}
-
-	// macOS / Linux：使用 external loop 并把 start 派到主线程
-	start, end := systray.RunWithExternalLoop(onReady, onExit)
-	dispatchOnMain(start)
-	return end
+	go systray.Run(onReady, onExit)
+	return func() { systray.Quit() }
 }

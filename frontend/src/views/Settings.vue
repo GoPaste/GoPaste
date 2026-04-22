@@ -10,23 +10,24 @@ import {
 import {
   ArrowLeft, Settings as SettingsIcon, Keyboard, ClipboardList,
   Clock, Download, Trash2, Check, Info, Database, Shield,
-  Monitor, MousePointer, RotateCcw, FolderOpen, X,
+  Monitor, MousePointer, RotateCcw, FolderOpen, X, Globe,
 } from 'lucide-vue-next'
+import { t, lang } from '../i18n'
+import type { Lang } from '../i18n'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// 当前选中的菜单
 type Tab = 'general' | 'clipboard' | 'shortcut' | 'history' | 'backup' | 'about'
 const activeTab = ref<Tab>('general')
 
-const navItems: { key: Tab; label: string; icon: any }[] = [
-  { key: 'general', label: '通用', icon: SettingsIcon },
-  { key: 'clipboard', label: '剪贴板', icon: ClipboardList },
-  { key: 'shortcut', label: '快捷键', icon: Keyboard },
-  { key: 'history', label: '历史记录', icon: Clock },
-  { key: 'backup', label: '备份', icon: Database },
-  { key: 'about', label: '关于', icon: Info },
-]
+const navItems = computed(() => [
+  { key: 'general' as Tab, label: t('navGeneral'), icon: SettingsIcon },
+  { key: 'clipboard' as Tab, label: t('navClipboard'), icon: ClipboardList },
+  { key: 'shortcut' as Tab, label: t('navShortcut'), icon: Keyboard },
+  { key: 'history' as Tab, label: t('navHistory'), icon: Clock },
+  { key: 'backup' as Tab, label: t('navBackup'), icon: Database },
+  { key: 'about' as Tab, label: t('navAbout'), icon: Info },
+])
 
 const form = reactive({
   hotkeyModifiers: [] as string[],
@@ -34,6 +35,7 @@ const form = reactive({
   maxItems: 1000,
   maxDays: 30,
   theme: 'dark',
+  language: 'zh' as Lang,
   autoPaste: true,
   hideOnPaste: true,
 })
@@ -49,6 +51,12 @@ const hotkeyDisplay = computed(() => {
   return parts.join(' + ')
 })
 
+function onLangChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value as Lang
+  form.language = v
+  lang.value = v // 实时生效
+}
+
 async function load() {
   const s: any = await GetSettings()
   form.hotkeyModifiers = [...(s.hotkeyModifiers || ['ctrl', 'shift'])]
@@ -56,6 +64,8 @@ async function load() {
   form.maxItems = s.maxItems ?? 1000
   form.maxDays = s.maxDays ?? 30
   form.theme = s.theme || 'dark'
+  form.language = (s.language || 'zh') as Lang
+  lang.value = form.language
   form.autoPaste = !!s.autoPaste
   form.hideOnPaste = !!s.hideOnPaste
   dataDir.value = await DataDir()
@@ -71,13 +81,14 @@ async function save() {
       maxItems: Number(form.maxItems),
       maxDays: Number(form.maxDays),
       theme: form.theme,
+      language: form.language,
       autoPaste: form.autoPaste,
       hideOnPaste: form.hideOnPaste,
     } as any)
-    saveMsg.value = '已保存'
+    saveMsg.value = t('saved')
     setTimeout(() => (saveMsg.value = ''), 2000)
   } catch (e: any) {
-    saveMsg.value = '保存失败: ' + (e?.message || e)
+    saveMsg.value = t('saveFailed') + (e?.message || e)
   } finally {
     saving.value = false
   }
@@ -89,15 +100,15 @@ async function doExport() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `gopaste-export-${Date.now()}.json`
+  a.download = `GoPaste-export-${Date.now()}.json`
   a.click()
   URL.revokeObjectURL(url)
 }
 
 async function doClear() {
-  if (!confirm('确定清空所有非收藏、非置顶的历史？')) return
+  if (!confirm(t('clearConfirm'))) return
   await ClearHistory()
-  saveMsg.value = '已清空'
+  saveMsg.value = t('cleared')
   setTimeout(() => (saveMsg.value = ''), 2000)
 }
 
@@ -143,17 +154,15 @@ onMounted(load)
 
 <template>
   <div class="pref">
-    <!-- 顶部标题栏 -->
     <div class="pref-titlebar drag-region">
       <SettingsIcon :size="14" class="titlebar-icon" />
-      <span class="titlebar-text">设置</span>
-      <button class="titlebar-close" @click="emit('close')" title="关闭设置">
+      <span class="titlebar-text">{{ t('settings') }}</span>
+      <button class="titlebar-close" @click="emit('close')" :title="t('closeSettings')">
         <X :size="16" />
       </button>
     </div>
 
     <div class="pref-body">
-      <!-- 左侧导航 -->
       <aside class="pref-nav">
         <nav class="nav-list">
           <button v-for="item in navItems" :key="item.key"
@@ -165,140 +174,146 @@ onMounted(load)
         </nav>
       </aside>
 
-      <!-- 右侧内容 -->
       <main class="pref-content">
       <!-- 通用 -->
       <div v-if="activeTab === 'general'" class="panel">
-        <h2>通用设置</h2>
+        <h2>{{ t('generalTitle') }}</h2>
         <div class="field">
-          <label><Monitor :size="14" /> 主题</label>
+          <label><Globe :size="14" /> {{ t('language') }}</label>
+          <select :value="form.language" @change="onLangChange">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <div class="field">
+          <label><Monitor :size="14" /> {{ t('theme') }}</label>
           <div class="seg-ctrl">
-            <button :class="{ active: form.theme === 'dark' }" @click="form.theme = 'dark'">深色</button>
-            <button :class="{ active: form.theme === 'light' }" @click="form.theme = 'light'">浅色</button>
+            <button :class="{ active: form.theme === 'dark' }" @click="form.theme = 'dark'">{{ t('dark') }}</button>
+            <button :class="{ active: form.theme === 'light' }" @click="form.theme = 'light'">{{ t('light') }}</button>
           </div>
         </div>
         <div class="field">
-          <label><MousePointer :size="14" /> 粘贴后行为</label>
+          <label><MousePointer :size="14" /> {{ t('pasteBehavior') }}</label>
         </div>
         <label class="check">
           <input type="checkbox" v-model="form.autoPaste" />
-          选中条目后自动发送粘贴键
+          {{ t('autoPasteLabel') }}
         </label>
         <label class="check">
           <input type="checkbox" v-model="form.hideOnPaste" />
-          粘贴后自动隐藏窗口
+          {{ t('hideOnPasteLabel') }}
         </label>
 
         <button class="btn-primary" :disabled="saving" @click="save">
           <Check :size="14" />
-          {{ saving ? '保存中...' : '保存设置' }}
+          {{ saving ? t('saving') : t('saveSettings') }}
         </button>
         <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
       </div>
 
       <!-- 剪贴板 -->
       <div v-if="activeTab === 'clipboard'" class="panel">
-        <h2>剪贴板设置</h2>
+        <h2>{{ t('clipboardTitle') }}</h2>
         <div class="field">
-          <label><Shield :size="14" /> 数据安全</label>
-          <p class="desc">所有文本内容使用 AES-256-GCM 加密存储，密钥保存在系统密钥环中。</p>
+          <label><Shield :size="14" /> {{ t('dataSecurity') }}</label>
+          <p class="desc">{{ t('dataSecurityDesc') }}</p>
         </div>
         <div class="field">
-          <label><FolderOpen :size="14" /> 数据目录</label>
+          <label><FolderOpen :size="14" /> {{ t('dataDir') }}</label>
           <code class="path">{{ dataDir }}</code>
         </div>
       </div>
 
       <!-- 快捷键 -->
       <div v-if="activeTab === 'shortcut'" class="panel">
-        <h2>快捷键设置</h2>
+        <h2>{{ t('shortcutTitle') }}</h2>
         <div class="field">
-          <label><Keyboard :size="14" /> 呼出/隐藏面板</label>
+          <label><Keyboard :size="14" /> {{ t('togglePanel') }}</label>
           <div class="hotkey-recorder" :class="{ recording }"
             tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
             <Keyboard :size="16" />
-            <span v-if="recording" class="rec-hint">请按下组合键...</span>
+            <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
             <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
-            <span v-if="!recording" class="rec-label">点击修改</span>
+            <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
           </div>
-          <p class="desc">支持 A-Z, 0-9, F1-F12, Space, Tab, Enter, Escape, Delete, 方向键。<br/>需包含至少一个修饰键（Ctrl / Shift / Alt / Cmd）。</p>
+          <p class="desc" style="white-space:pre-line">{{ t('shortcutDesc') }}</p>
         </div>
 
         <button class="btn-primary" :disabled="saving" @click="save">
           <Check :size="14" />
-          {{ saving ? '保存中...' : '保存快捷键' }}
+          {{ saving ? t('saving') : t('saveShortcut') }}
         </button>
         <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
       </div>
 
       <!-- 历史记录 -->
       <div v-if="activeTab === 'history'" class="panel">
-        <h2>历史记录</h2>
+        <h2>{{ t('historyTitle') }}</h2>
         <div class="field">
-          <label>最大保留条数</label>
+          <label>{{ t('maxItems') }}</label>
           <div class="input-group">
             <input type="number" min="0" v-model="form.maxItems" />
-            <span class="unit">条 (0=不限制)</span>
+            <span class="unit">{{ t('maxItemsUnit') }}</span>
           </div>
         </div>
         <div class="field">
-          <label>最大保留天数</label>
+          <label>{{ t('maxDays') }}</label>
           <div class="input-group">
             <input type="number" min="0" v-model="form.maxDays" />
-            <span class="unit">天 (0=不限制)</span>
+            <span class="unit">{{ t('maxDaysUnit') }}</span>
           </div>
         </div>
         <div class="field">
-          <label>清理数据</label>
+          <label>{{ t('cleanData') }}</label>
           <button class="btn-danger" @click="doClear">
             <Trash2 :size="14" />
-            清空非收藏历史
+            {{ t('clearUnfav') }}
           </button>
         </div>
 
         <button class="btn-primary" :disabled="saving" @click="save">
           <Check :size="14" />
-          {{ saving ? '保存中...' : '保存设置' }}
+          {{ saving ? t('saving') : t('saveSettings') }}
         </button>
         <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
       </div>
 
       <!-- 备份 -->
       <div v-if="activeTab === 'backup'" class="panel">
-        <h2>数据备份</h2>
+        <h2>{{ t('backupTitle') }}</h2>
         <div class="field">
-          <label><Download :size="14" /> 导出数据</label>
-          <p class="desc">导出所有剪切板记录为 JSON 文件（不含图片二进制数据）。</p>
+          <label><Download :size="14" /> {{ t('exportData') }}</label>
+          <p class="desc">{{ t('exportDesc') }}</p>
           <button class="btn-outline" @click="doExport">
             <Download :size="14" />
-            导出 JSON
+            {{ t('exportJson') }}
           </button>
         </div>
         <div class="field">
-          <label><RotateCcw :size="14" /> 导入数据</label>
-          <p class="desc">暂未支持，后续版本将提供 JSON 导入功能。</p>
+          <label><RotateCcw :size="14" /> {{ t('importData') }}</label>
+          <p class="desc">{{ t('importDesc') }}</p>
         </div>
       </div>
 
       <!-- 关于 -->
       <div v-if="activeTab === 'about'" class="panel">
-        <h2>关于 gopaste</h2>
+        <h2>{{ t('aboutTitle') }}</h2>
         <div class="about-card">
-          <div class="about-logo">p</div>
+          <div class="about-logo">P</div>
           <div class="about-info">
-            <div class="about-name">gopaste</div>
+            <div class="about-name">GoPaste</div>
             <div class="about-ver">v0.1.0</div>
           </div>
         </div>
         <div class="about-desc">
-          <p>跨平台剪切板管理工具</p>
-          <p>基于 Wails v2 + Go + Vue 3 构建。</p>
-          <p>数据本地 AES-256-GCM 加密存储，永不上云。</p>
+          <p>{{ t('aboutDesc1') }}</p>
+          <p>{{ t('aboutDesc2') }}</p>
+          <p>{{ t('aboutDesc3') }}</p>
         </div>
         <div class="about-links">
-          <div class="link-row"><span class="link-label">技术栈</span><span>Go · Vue 3 · Wails · SQLite</span></div>
-          <div class="link-row"><span class="link-label">开源协议</span><span>MIT</span></div>
-          <div class="link-row"><span class="link-label">数据目录</span><code>{{ dataDir }}</code></div>
+          <div class="link-row"><span class="link-label">{{ t('techStack') }}</span><span>Go · Vue 3 · Wails · SQLite</span></div>
+          <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>MIT</span></div>
+          <div class="link-row"><span class="link-label">{{ t('dataDir') }}</span><code>{{ dataDir }}</code></div>
         </div>
       </div>
     </main>
@@ -311,7 +326,6 @@ onMounted(load)
   display: flex; flex-direction: column; height: 100%; background: var(--bg);
 }
 
-/* 顶部标题栏 */
 .pref-titlebar {
   display: flex; align-items: center; gap: 8px;
   height: 36px; padding: 0 12px;
@@ -332,27 +346,25 @@ onMounted(load)
 
 .pref-body { display: flex; flex: 1; overflow: hidden; }
 
-/* 左侧导航 */
 .pref-nav {
-  width: 150px; flex-shrink: 0;
+  width: 120px; flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--bg-elevated);
   padding: 10px 0; overflow-y: auto;
 }
-.nav-list { display: flex; flex-direction: column; gap: 2px; padding: 0 6px; }
+.nav-list { display: flex; flex-direction: column; gap: 2px; padding: 0 4px; }
 .nav-item {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px;
   background: transparent; border: none; color: var(--text-secondary);
-  padding: 9px 12px; border-radius: 6px; cursor: pointer;
-  font-size: 13px; text-align: left; transition: all .12s;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; text-align: left; transition: all .12s;
   --wails-draggable: no-drag; -webkit-app-region: no-drag;
 }
 .nav-item:hover { background: var(--bg-elevated); color: var(--text); }
 .nav-item.active { background: var(--accent); color: #fff; }
 
-/* 右侧内容 */
 .pref-content {
-  flex: 1; overflow-y: auto; padding: 20px 24px;
+  flex: 1; overflow-y: auto; padding: 16px 14px;
 }
 .panel h2 {
   font-size: 16px; font-weight: 600; color: var(--text);
@@ -387,7 +399,6 @@ onMounted(load)
 }
 .check input { cursor: pointer; }
 
-/* 按钮 */
 .btn-primary {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--accent); border: none; color: #fff;
@@ -413,7 +424,6 @@ onMounted(load)
 
 .save-msg { font-size: 12px; color: var(--success); margin-left: 10px; }
 
-/* 快捷键录制器 */
 .hotkey-recorder {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; margin-top: 4px;
@@ -431,7 +441,6 @@ onMounted(load)
 .rec-label { font-size: 11px; color: var(--text-muted); margin-left: auto; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
 
-/* 关于页 */
 .about-card {
   display: flex; align-items: center; gap: 14px;
   padding: 16px; background: var(--bg-elevated); border-radius: 10px; margin-bottom: 16px;
@@ -455,7 +464,6 @@ onMounted(load)
 .link-row span:last-child, .link-row code { color: var(--text-secondary); }
 .link-row code { font-size: 12px; background: var(--bg-elevated); padding: 2px 6px; border-radius: 3px; }
 
-/* Segmented Control（主题切换） */
 .seg-ctrl {
   display: inline-flex; border-radius: 8px; overflow: hidden;
   border: 1px solid var(--border); background: var(--bg);
@@ -469,7 +477,6 @@ onMounted(load)
 .seg-ctrl button.active { background: var(--accent); color: #fff; }
 .seg-ctrl button:hover:not(.active) { background: var(--bg-hover); }
 
-/* 拖拽 */
 .drag-region { --wails-draggable: drag; -webkit-app-region: drag; }
 .drag-region button { --wails-draggable: no-drag; -webkit-app-region: no-drag; }
 </style>

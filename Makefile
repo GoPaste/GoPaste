@@ -1,4 +1,4 @@
-# gopaste Makefile
+# GoPaste Makefile
 # 使用方式: make <target>
 # 示例: make dev / make build-win / make build-all
 
@@ -28,7 +28,7 @@ RESET := \033[0m
 # ============== 默认目标 ==============
 help: ## 显示帮助
 	@echo ""
-	@echo "$(CYAN)gopaste$(RESET) - 跨平台剪切板管理工具"
+	@echo "$(CYAN)GoPaste$(RESET) - 跨平台剪切板管理工具"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-18s$(RESET) %s\n", $$1, $$2}'
@@ -43,16 +43,16 @@ debug: ## 启动开发模式 + 开启 DevTools
 
 # ============== 构建 ==============
 build: ## 构建当前平台
-	$(WAILS) build -clean $(WAILS_FLAGS)
+	xvfb-run -a $(WAILS) build -clean $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-win: ## 构建 Windows (amd64)
 	CC=$(WIN_CC) CXX=$(WIN_CXX) \
-	$(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
+	xvfb-run -a $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
 build-win-arm: ## 构建 Windows (arm64)
-	$(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
+	xvfb-run -a $(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
 build-mac: ## 构建 macOS (universal) ⚠️ 需在 macOS 上运行
@@ -69,7 +69,7 @@ build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
 	$(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
 
 build-linux: ## 构建 Linux (amd64)
-	$(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
+	xvfb-run -a $(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac 上单独构建或用 CI）

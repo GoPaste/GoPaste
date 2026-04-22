@@ -16,6 +16,7 @@ type Settings struct {
 	MaxItems        int      `json:"maxItems"`        // 非收藏/置顶的最大保留条数，0 表示不限制
 	MaxDays         int      `json:"maxDays"`         // 保留天数，0 表示不限制
 	Theme           string   `json:"theme"`           // "dark" | "light" | "auto"
+	Language        string   `json:"language"`        // "zh" | "en"
 	AutoPaste       bool     `json:"autoPaste"`       // 选中后是否模拟发送粘贴键
 	HideOnPaste     bool     `json:"hideOnPaste"`     // 粘贴后是否自动隐藏窗口
 }
@@ -28,6 +29,7 @@ func Default() Settings {
 		MaxItems:        1000,
 		MaxDays:         30,
 		Theme:           "dark",
+		Language:        "zh",
 		AutoPaste:       true,
 		HideOnPaste:     true,
 	}
@@ -71,6 +73,9 @@ func Open(path string) (*Store, error) {
 	merged.MaxDays = loaded.MaxDays
 	if loaded.Theme != "" {
 		merged.Theme = loaded.Theme
+	}
+	if loaded.Language != "" {
+		merged.Language = loaded.Language
 	}
 	merged.AutoPaste = loaded.AutoPaste
 	merged.HideOnPaste = loaded.HideOnPaste

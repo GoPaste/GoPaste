@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,7 +124,7 @@ func (a *App) startup(ctx context.Context) {
 	// 7) 启动时按策略 prune
 	go a.runPrune()
 
-	a.log.Info("gopaste started", "data", paths.Root)
+	a.log.Info("GoPaste started", "data", paths.Root)
 }
 
 // shutdown 清理资源。
@@ -404,6 +405,36 @@ func (a *App) DataDir() string {
 	return a.paths.Root
 }
 
+// GetFileThumbnail 读取文件路径（从文件类型条目的 Content 中），
+// 如果是图片文件则返回 base64 编码的内容，否则返回空字符串。
+func (a *App) GetFileThumbnail(id int64) (string, error) {
+	if a.repo == nil {
+		return "", fmt.Errorf("storage not ready")
+	}
+	_, content, err := a.repo.GetItemWithContent(id)
+	if err != nil {
+		return "", err
+	}
+	paths := strings.Split(string(content), "\n")
+	if len(paths) != 1 {
+		return "", nil // 多文件不预览
+	}
+	p := strings.TrimSpace(paths[0])
+	ext := strings.ToLower(filepath.Ext(p))
+	imageExts := map[string]bool{
+		".png": true, ".jpg": true, ".jpeg": true,
+		".gif": true, ".bmp": true, ".webp": true, ".ico": true,
+	}
+	if !imageExts[ext] {
+		return "", nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", nil // 文件可能已删除
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
 // openDataDir 在系统文件管理器中打开数据目录（托盘菜单触发）。
 func (a *App) openDataDir() {
 	if a.paths == nil {
@@ -430,8 +461,8 @@ func (a *App) showAbout() {
 	}
 	_, _ = wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
 		Type:    wailsruntime.InfoDialog,
-		Title:   "关于 gopaste",
-		Message: "gopaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。",
+		Title:   "关于 GoPaste",
+		Message: "GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。",
 		Buttons: []string{"确定"},
 	})
 }
@@ -462,7 +493,7 @@ func (a *App) restartApp() {
 		a.log.Error("restart: start new process", "err", err)
 		return
 	}
-	a.log.Info("restarting gopaste", "new_pid", cmd.Process.Pid)
+	a.log.Info("restarting GoPaste", "new_pid", cmd.Process.Pid)
 	a.quitApp()
 }
 
@@ -513,4 +544,52 @@ func (a *App) SaveImageToFile(id int64) (string, error) {
 		return "", err
 	}
 	return savePath, nil
+}
+
+// OpenImageExternal 将图片写入临时文件，用系统默认图片查看器打开（原始尺寸）。
+// 支持 image 类型和 file 类型（单个图片文件直接打开源文件）。
+func (a *App) OpenImageExternal(id int64) error {
+	if a.repo == nil {
+		return fmt.Errorf("storage not ready")
+	}
+	t, content, err := a.repo.GetItemWithContent(id)
+	if err != nil {
+		return err
+	}
+
+	var target string
+
+	if t == types.TypeFile {
+		// 文件类型：直接打开源文件路径
+		paths := strings.Split(string(content), "\n")
+		if len(paths) == 1 {
+			p := strings.TrimSpace(paths[0])
+			if _, err := os.Stat(p); err == nil {
+				target = p
+			}
+		}
+		if target == "" {
+			return fmt.Errorf("file not found or multiple files")
+		}
+	} else if t == types.TypeImage {
+		// 图片类型：写入临时文件
+		tmp := filepath.Join(os.TempDir(), fmt.Sprintf("gopaste_preview_%d.png", id))
+		if err := os.WriteFile(tmp, content, 0o644); err != nil {
+			return err
+		}
+		target = tmp
+	} else {
+		return fmt.Errorf("not an image type")
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "shimgvw.dll,ImageView_Fullscreen", target)
+	case "darwin":
+		cmd = exec.Command("open", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	return cmd.Start()
 }
