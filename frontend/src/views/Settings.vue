@@ -412,8 +412,7 @@ onMounted(load)
 
         <div class="section-title">{{ t('cleanData') }}</div>
         <div class="section-card">
-          <div class="card-row">
-            <span>{{ t('clearUnfav') }}</span>
+          <div class="card-row end">
             <button class="btn-danger" @click="doClear">
               <Trash2 :size="14" />
               {{ t('clearUnfav') }}
@@ -637,6 +636,7 @@ onMounted(load)
 .card-row:last-child { border-bottom: none; }
 .card-row.disabled { opacity: .45; pointer-events: none; }
 .card-row.stack { display: block; }
+.card-row.end { justify-content: flex-end; }
 .card-row.stack .desc-inline { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 .card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-row .path {
