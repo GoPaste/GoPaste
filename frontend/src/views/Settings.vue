@@ -340,7 +340,6 @@ onMounted(load)
             <div class="hotkey-recorder" :class="{ recording }"
               tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)"
               @blur="recording = false">
-              <Keyboard :size="16" />
               <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
               <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
             </div>
@@ -456,6 +455,8 @@ onMounted(load)
   border-bottom: 1px solid var(--bg-elevated);
   flex-shrink: 0; user-select: none;
 }
+[data-os="mac"] .pref-titlebar { padding-left: 80px; }
+[data-os="mac"] .titlebar-close { display: none; }
 .titlebar-icon { color: var(--text-muted); }
 .titlebar-text { font-size: 13px; color: var(--text-secondary); flex: 1; }
 .titlebar-close {
@@ -574,7 +575,7 @@ onMounted(load)
   font-family: 'SF Mono', 'Consolas', monospace; letter-spacing: 1px;
   white-space: nowrap;
 }
-.rec-hint { font-size: 14px; color: var(--warning); animation: pulse 1s infinite; }
+.rec-hint { font-size: 12px; color: var(--warning); animation: pulse 1s infinite; white-space: nowrap; }
 .rec-label { font-size: 11px; color: var(--text-muted); margin-left: auto; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
 
@@ -641,8 +642,8 @@ onMounted(load)
 .card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-row .path {
   flex: 1; min-width: 0; margin-left: 10px; text-align: right;
-  word-break: break-all;
-  font-size: 10px;
+  white-space: nowrap; overflow-x: auto; overflow-y: hidden;
+  font-size: 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }

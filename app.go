@@ -847,6 +847,24 @@ func (a *App) RevealInExplorer(path string) error {
 	return cmd.Start()
 }
 
+// OpenURL 使用系统默认浏览器打开 URL。
+// 直接调用 Wails runtime 的 BrowserOpenURL，屏蔽平台差异。
+func (a *App) OpenURL(url string) error {
+	if a.ctx == nil {
+		return fmt.Errorf("not ready")
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return fmt.Errorf("empty url")
+	}
+	// 如果缺少协议头，默认补 https://
+	if !strings.Contains(url, "://") {
+		url = "https://" + url
+	}
+	wailsruntime.BrowserOpenURL(a.ctx, url)
+	return nil
+}
+
 // SaveImageToFile 将图片内容保存到用户选择的位置（通过系统保存对话框）。
 func (a *App) SaveImageToFile(id int64) (string, error) {
 	if a.repo == nil || a.ctx == nil {

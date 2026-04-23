@@ -11,9 +11,9 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
 	"gopaste/internal/config"
+	"gopaste/internal/platform"
 	"gopaste/internal/settings"
 )
 
@@ -60,32 +60,27 @@ func main() {
 	}
 
 	bootProbe(fmt.Sprintf("main: before wails.Run startHidden=%v", startHidden))
-	err := wails.Run(&options.App{
+	appOpts := &options.App{
 		Title:             "GoPaste",
 		Width:             480,
 		Height:            680,
 		MinWidth:          480,
 		MinHeight:         600,
 		DisableResize:     false,
-		Frameless:         true,
 		StartHidden:       startHidden,
 		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
+		BackgroundColour: &options.RGBA{R: 245, G: 245, B: 245, A: 255},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
 		},
-		Windows: &windows.Options{
-			WebviewIsTransparent:              true,
-			WindowIsTranslucent:               true,
-			DisableWindowIcon:                 true,
-			DisableFramelessWindowDecorations: true,
-		},
-	})
+	}
+	platform.ApplyOptions(appOpts)
+	err := wails.Run(appOpts)
 
 	if err != nil {
 		bootProbe("main: wails.Run returned err=" + err.Error())
