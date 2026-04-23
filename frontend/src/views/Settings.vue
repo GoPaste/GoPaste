@@ -410,14 +410,11 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="section-title">{{ t('cleanData') }}</div>
-        <div class="section-card">
-          <div class="card-row end">
-            <button class="btn-danger" @click="doClear">
-              <Trash2 :size="14" />
-              {{ t('clearUnfav') }}
-            </button>
-          </div>
+        <div class="danger-zone">
+          <button class="btn-danger" @click="doClear">
+            <Trash2 :size="14" />
+            {{ t('clearUnfav') }}
+          </button>
         </div>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
@@ -638,6 +635,7 @@ onMounted(load)
 .card-row.disabled { opacity: .45; pointer-events: none; }
 .card-row.stack { display: block; }
 .card-row.end { justify-content: flex-end; }
+.danger-zone { display: flex; justify-content: center; margin-top: 18px; }
 .card-row.stack .desc-inline { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 .card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-row .path {
