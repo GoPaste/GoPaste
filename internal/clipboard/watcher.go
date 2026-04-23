@@ -64,6 +64,12 @@ func (w *Watcher) loop(ctx context.Context, textCh, imageCh <-chan []byte) {
 				textCh = nil
 				continue
 			}
+			// 复制文件/文件夹时，系统会同时写入文件 URL 和文件名文本。
+			// 文件 URL 由 FileWatcher 处理；这里必须忽略那个伴随文本，
+			// 否则同一次复制会既入"文件"又入"文本"两条记录。
+			if hasFilesOnClipboard() {
+				continue
+			}
 			w.handle(typeOfText(b), b)
 		case b, ok := <-imageCh:
 			if !ok {

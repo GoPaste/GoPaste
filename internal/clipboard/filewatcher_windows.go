@@ -10,19 +10,30 @@ import (
 )
 
 var (
-	user32          = syscall.NewLazyDLL("user32.dll")
-	kernel32        = syscall.NewLazyDLL("kernel32.dll")
-	shell32         = syscall.NewLazyDLL("shell32.dll")
-	openClipboard   = user32.NewProc("OpenClipboard")
-	closeClipboard  = user32.NewProc("CloseClipboard")
-	getClipboardData = user32.NewProc("GetClipboardData")
+	user32              = syscall.NewLazyDLL("user32.dll")
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	shell32             = syscall.NewLazyDLL("shell32.dll")
+	openClipboard       = user32.NewProc("OpenClipboard")
+	closeClipboard      = user32.NewProc("CloseClipboard")
+	getClipboardData    = user32.NewProc("GetClipboardData")
 	isClipboardFmtAvail = user32.NewProc("IsClipboardFormatAvailable")
-	globalLock      = kernel32.NewProc("GlobalLock")
-	globalUnlock    = kernel32.NewProc("GlobalUnlock")
-	dragQueryFileW  = shell32.NewProc("DragQueryFileW")
+	globalLock          = kernel32.NewProc("GlobalLock")
+	globalUnlock        = kernel32.NewProc("GlobalUnlock")
+	dragQueryFileW      = shell32.NewProc("DragQueryFileW")
 )
 
 const cfHDROP = 15
+
+// hasFilesOnClipboard 在 Windows 上仅检查剪切板是否含 CF_HDROP（文件列表），
+// 不需要 OpenClipboard，调用极其轻量。
+//
+// Windows 在资源管理器里复制文件/文件夹时，剪切板会同时写入 CF_HDROP 与
+// CF_UNICODETEXT（文件名），text watcher 会把文件名误当文本入库 —— 本函数
+// 用来让上层忽略这种情况。
+func hasFilesOnClipboard() bool {
+	ret, _, _ := isClipboardFmtAvail.Call(uintptr(cfHDROP))
+	return ret != 0
+}
 
 // pollFiles 读取 Windows 剪切板中的 CF_HDROP 数据（文件路径列表）。
 func pollFiles() []FileInfo {
