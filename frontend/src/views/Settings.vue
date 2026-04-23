@@ -6,6 +6,7 @@ import {
   ExportData,
   ClearHistory,
   DataDir,
+  TrayNeedsRestart,
 } from '../../wailsjs/go/main/App'
 import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
@@ -47,6 +48,8 @@ const form = reactive({
 const dataDir = ref('')
 const saveMsg = ref('')
 const recording = ref(false)
+// 托盘图标是否需要重启才能重新显示（仅当本进程内已关过一次才需要）
+const trayRestartRequired = ref(false)
 // 标记初次 load 完成前不触发自动保存
 const loaded = ref(false)
 
@@ -83,6 +86,7 @@ async function load() {
   form.showTrayIcon = s.showTrayIcon !== false
   form.showTaskbarIcon = !!s.showTaskbarIcon
   dataDir.value = await DataDir()
+  try { trayRestartRequired.value = await TrayNeedsRestart() } catch {}
   // load 完成后再允许自动保存，避免 watch 初始触发回写
   loaded.value = true
 }
@@ -107,6 +111,8 @@ async function autoSave() {
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => { saveMsg.value = '' }, 1500)
+    // 更新托盘"需要重启"标志：关闭后进程内无法再开启，需用户知晓
+    try { trayRestartRequired.value = await TrayNeedsRestart() } catch {}
   } catch (e: any) {
     saveMsg.value = t('saveFailed') + (e?.message || e)
   }
@@ -240,7 +246,7 @@ onMounted(load)
           <div class="card-row">
             <div>
               <span>{{ t('showTrayIcon') }}</span>
-              <p class="desc-inline">{{ t('restartRequired') }}</p>
+              <p v-if="trayRestartRequired && form.showTrayIcon" class="desc-inline">{{ t('restartRequired') }}</p>
             </div>
             <label class="toggle"><input type="checkbox" v-model="form.showTrayIcon" /><span class="slider"></span></label>
           </div>

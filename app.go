@@ -40,6 +40,7 @@ type App struct {
 	fileWatch *clipboard.FileWatcher
 	hotkey   *hotkey.Manager
 	trayEnd  func()
+	trayQuit bool // 本进程内是否已调用过 systray.Quit()；一旦为 true，托盘无法在本进程再启用
 	settings *settings.Store
 
 	// 窗口可见状态
@@ -480,9 +481,15 @@ func (a *App) initFileLogger(root string) {
 }
 
 // startTray 启动系统托盘。
+// 注意：fyne/systray 内部用 sync.Once 保护 Quit，一个进程只能关一次；
+// 关闭之后再调用 Start 不会真正弹出图标，此时 a.trayQuit=true，需要重启进程。
 func (a *App) startTray() {
 	if a.trayEnd != nil {
 		return // 已启动
+	}
+	if a.trayQuit {
+		a.log.Warn("tray: cannot re-enable after quit; restart required")
+		return
 	}
 	a.trayEnd = tray.Start(tray.Callbacks{
 		OnShow:    a.togglePanel,
@@ -497,6 +504,7 @@ func (a *App) stopTray() {
 	if a.trayEnd != nil {
 		a.trayEnd()
 		a.trayEnd = nil
+		a.trayQuit = true
 	}
 }
 
@@ -657,16 +665,37 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings not ready")
 	}
+	prev := a.settings.Get()
 	if err := a.settings.Set(ns); err != nil {
 		return err
 	}
 	a.registerHotkey()
 	go a.runPrune()
 
-	// Windows 任务栏图标实时生效，无需重启
+	// Windows 任务栏图标实时生效
 	a.applyTaskbarIcon(0)
 
+	// 托盘图标实时生效：
+	//   - 从"显示"切到"隐藏"：直接调用 systray.Quit() 关闭，图标立刻消失。
+	//   - 从"隐藏"切到"显示"：本进程内首次启动（a.trayEnd == nil）可以 Start；
+	//     如果之前关过一次（systray 内部 quitOnce 已消耗），Start 会被一次性门
+	//     挡住——这种场景才需要重启，由前端看到 trayStopped=true 时自行提示。
+	if prev.ShowTrayIcon != ns.ShowTrayIcon {
+		if ns.ShowTrayIcon {
+			a.startTray() // 首次启用或进程内尚未关闭时生效
+		} else {
+			a.stopTray()
+		}
+	}
+
 	return nil
+}
+
+// TrayNeedsRestart 返回是否需要重启才能重新显示托盘图标。
+// 仅当本进程内已关过一次托盘（systray 内部 quitOnce 已消耗）时为 true；
+// 前端在 showTrayIcon 从 false 切到 true 时据此决定是否提示"重启生效"。
+func (a *App) TrayNeedsRestart() bool {
+	return a.trayQuit
 }
 
 // ExportData 导出所有历史为 JSON 字符串（不含图片二进制；仅元数据）。
