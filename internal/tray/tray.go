@@ -57,10 +57,10 @@ func Start(cb Callbacks) (cleanup func()) {
 		// 右键菜单项
 		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
 		systray.AddSeparator()
-		mAbout := systray.AddMenuItem("关于 GoPaste", "版本与项目信息")
+		mAbout := systray.AddMenuItem("关于", "版本与项目信息")
 		systray.AddSeparator()
-		mRestart := systray.AddMenuItem("重启 GoPaste", "重新启动应用")
-		mQuit := systray.AddMenuItem("退出 GoPaste", "完全关闭应用")
+		mRestart := systray.AddMenuItem("重启", "重新启动应用")
+		mQuit := systray.AddMenuItem("退出", "完全关闭应用")
 
 		go func() {
 			for {
