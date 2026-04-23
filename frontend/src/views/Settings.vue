@@ -289,7 +289,7 @@ onMounted(load)
 
       <!-- 剪贴板 -->
       <div v-if="activeTab === 'clipboard'" class="panel">
-        <div class="section-title">{{ t('pasteBehavior') }}</div>
+        <div class="section-title">{{ t('contentSettings') }}</div>
         <div class="section-card">
           <div class="card-row">
             <span>{{ t('pasteBehavior') }}</span>
@@ -298,6 +298,10 @@ onMounted(load)
               <button :class="{ active: form.pasteTrigger === 'double' }" @click="form.pasteTrigger = 'double'">{{ t('triggerDouble') }}</button>
             </div>
           </div>
+        </div>
+
+        <div class="section-title">{{ t('windowSettings') }}</div>
+        <div class="section-card">
           <div class="card-row">
             <div>
               <span>{{ t('windowPosition') }}</span>
