@@ -7,10 +7,13 @@ import {
   ClearHistory,
   DataDir,
   TrayNeedsRestart,
+  GetAppVersion,
+  CheckForUpdate,
+  OpenURL,
 } from '../../wailsjs/go/main/App'
 import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
-  Download, Trash2, Info, Database, X,
+  Download, Trash2, Info, Database, X, AlertTriangle,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
@@ -42,6 +45,7 @@ const form = reactive({
   silentStart: false,
   showTrayIcon: true,
   showTaskbarIcon: false,
+  autoStart: false,
 })
 
 const dataDir = ref('')
@@ -51,6 +55,39 @@ const recording = ref(false)
 const trayRestartRequired = ref(false)
 // 标记初次 load 完成前不触发自动保存
 const loaded = ref(false)
+
+// 关于页：版本号 + 检查更新
+const appVersion = ref('0.0.0')
+const updateChecking = ref(false)
+const updateMsg = ref('')
+const updateHasNew = ref(false)
+const updateUrl = ref('')
+
+async function onCheckUpdate() {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  updateMsg.value = ''
+  updateHasNew.value = false
+  updateUrl.value = ''
+  try {
+    const res: any = await CheckForUpdate()
+    if (res && res.hasUpdate) {
+      updateHasNew.value = true
+      updateUrl.value = res.releaseUrl || ''
+      updateMsg.value = t('newVersionAvailable', { v: res.latestVersion || '' })
+    } else {
+      updateMsg.value = t('upToDate')
+    }
+  } catch (e) {
+    console.error(e)
+    updateMsg.value = t('upToDate') // 无网络等错误静默当作"已是最新"
+  } finally {
+    updateChecking.value = false
+  }
+}
+async function onOpenRelease() {
+  if (updateUrl.value) await OpenURL(updateUrl.value)
+}
 
 const hotkeyDisplay = computed(() => {
   const parts = [...form.hotkeyModifiers.map(m => m.charAt(0).toUpperCase() + m.slice(1))]
@@ -84,8 +121,10 @@ async function load() {
   form.silentStart = !!s.silentStart
   form.showTrayIcon = s.showTrayIcon !== false
   form.showTaskbarIcon = !!s.showTaskbarIcon
+  form.autoStart = !!s.autoStart
   dataDir.value = await DataDir()
   try { trayRestartRequired.value = await TrayNeedsRestart() } catch {}
+  try { appVersion.value = await GetAppVersion() } catch {}
   // load 完成后再允许自动保存，避免 watch 初始触发回写
   loaded.value = true
 }
@@ -107,6 +146,7 @@ async function autoSave() {
       silentStart: form.silentStart,
       showTrayIcon: form.showTrayIcon,
       showTaskbarIcon: form.showTaskbarIcon,
+      autoStart: form.autoStart,
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => { saveMsg.value = '' }, 1500)
@@ -142,6 +182,7 @@ watchImmediate(() => form.resetFilterOnShow)
 watchImmediate(() => form.silentStart)
 watchImmediate(() => form.showTrayIcon)
 watchImmediate(() => form.showTaskbarIcon)
+watchImmediate(() => form.autoStart)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
 // 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
@@ -158,11 +199,24 @@ async function doExport() {
 }
 
 async function doClear() {
-  if (!confirm(t('clearConfirm'))) return
+  if (!(await showConfirm(t('clearConfirm')))) return
   await ClearHistory()
   saveMsg.value = t('cleared')
   setTimeout(() => (saveMsg.value = ''), 2000)
 }
+
+// 自定义确认弹窗（替代浏览器原生 window.confirm，保持应用内一致的 UI 风格）
+const confirmVisible = ref(false)
+const confirmMsg = ref('')
+let confirmResolve: ((v: boolean) => void) | null = null
+
+function showConfirm(msg: string): Promise<boolean> {
+  confirmMsg.value = msg
+  confirmVisible.value = true
+  return new Promise(resolve => { confirmResolve = resolve })
+}
+function onConfirmOk() { confirmVisible.value = false; confirmResolve?.(true) }
+function onConfirmCancel() { confirmVisible.value = false; confirmResolve?.(false) }
 
 function startRecording() { recording.value = true }
 
@@ -231,9 +285,9 @@ onMounted(load)
       <div v-if="activeTab === 'general'" class="panel">
         <div class="section-title">{{ t('appSettings') }}</div>
         <div class="section-card">
-          <div class="card-row disabled">
+          <div class="card-row">
             <span>{{ t('launchOnLogin') }}</span>
-            <span class="badge">{{ t('comingSoon') }}</span>
+            <label class="toggle"><input type="checkbox" v-model="form.autoStart" /><span class="slider"></span></label>
           </div>
           <div class="card-row">
             <div>
@@ -425,7 +479,7 @@ onMounted(load)
           <img class="about-logo" src="/appicon.png" />
           <div class="about-info">
             <div class="about-name">GoPaste</div>
-            <div class="about-ver">v0.1.0</div>
+            <div class="about-ver">v{{ appVersion }}</div>
           </div>
         </div>
         <div class="about-desc">
@@ -437,9 +491,37 @@ onMounted(load)
           <div class="link-row"><span class="link-label">{{ t('techStack') }}</span><span>Go · Vue 3 · Wails · SQLite</span></div>
           <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>MIT</span></div>
         </div>
+        <div class="about-update">
+          <button class="btn-outline" :disabled="updateChecking" @click="onCheckUpdate">
+            {{ updateChecking ? t('checking') : t('checkUpdate') }}
+          </button>
+          <span v-if="updateMsg" class="update-msg" :class="{ 'has-update': updateHasNew }">
+            {{ updateMsg }}
+            <button v-if="updateHasNew && updateUrl" class="btn-link" @click="onOpenRelease">
+              {{ t('download') }}
+            </button>
+          </span>
+        </div>
       </div>
     </main>
     </div>
+
+    <!-- 确认弹窗 -->
+    <Transition name="fade">
+      <div v-if="confirmVisible" class="confirm-mask" @click.self="onConfirmCancel">
+        <div class="confirm-box">
+          <div class="confirm-icon"><AlertTriangle :size="24" /></div>
+          <div class="confirm-body">
+            <div class="confirm-title">{{ t('confirmOp') }}</div>
+            <div class="confirm-msg">{{ confirmMsg }}</div>
+          </div>
+          <div class="confirm-actions">
+            <button class="cbtn cbtn-cancel" @click="onConfirmCancel">{{ t('cancel') }}</button>
+            <button class="cbtn cbtn-ok" @click="onConfirmOk">{{ t('ok') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -593,6 +675,19 @@ onMounted(load)
 .about-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
 .about-desc p { margin: 4px 0; }
 .about-links { border-top: 1px solid var(--bg-elevated); padding-top: 12px; }
+.about-update {
+  margin-top: 16px; padding-top: 12px;
+  border-top: 1px solid var(--bg-elevated);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.about-update .btn-outline { min-width: 100px; }
+.update-msg { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
+.update-msg.has-update { color: var(--warning); font-weight: 500; }
+.btn-link {
+  background: none; border: none; padding: 0;
+  color: var(--accent); cursor: pointer; font-size: 12px; text-decoration: underline;
+}
+.btn-link:hover { color: var(--accent-hover); }
 .link-row {
   display: flex; gap: 12px; padding: 6px 0; font-size: 13px;
 }
@@ -670,4 +765,25 @@ onMounted(load)
 
 .drag-region { --wails-draggable: drag; -webkit-app-region: drag; }
 .drag-region button { --wails-draggable: no-drag; -webkit-app-region: no-drag; }
+
+/* 自定义确认弹窗（样式与 App.vue 对齐，保持跨视图一致） */
+.confirm-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.confirm-box {
+  background: var(--bg-elevated); border-radius: 12px; padding: 20px;
+  width: 320px; box-shadow: 0 8px 30px rgba(0,0,0,.3);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.confirm-icon { color: var(--warning); display: flex; justify-content: center; }
+.confirm-body { text-align: center; }
+.confirm-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.confirm-msg { font-size: 13px; color: var(--text-secondary); }
+.confirm-actions { display: flex; gap: 10px; justify-content: center; }
+.cbtn { padding: 8px 24px; border-radius: 6px; font-size: 13px; cursor: pointer; border: none; transition: all .15s; }
+.cbtn-cancel { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
+.cbtn-cancel:hover { background: var(--bg-hover); color: var(--text); }
+.cbtn-ok { background: var(--danger); color: #fff; }
+.cbtn-ok:hover { background: #dc2626; }
+
+.fade-enter-active, .fade-leave-active { transition: opacity .15s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

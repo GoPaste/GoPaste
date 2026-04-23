@@ -17,6 +17,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"gopaste/internal/appguard"
 	"gopaste/internal/clipboard"
 	"gopaste/internal/config"
 	"gopaste/internal/crypto"
@@ -27,6 +28,7 @@ import (
 	"gopaste/internal/storage"
 	"gopaste/internal/tray"
 	"gopaste/internal/types"
+	"gopaste/internal/updater"
 	"gopaste/internal/window"
 )
 
@@ -117,6 +119,14 @@ func (a *App) startup(ctx context.Context) {
 	s := settings.Default()
 	if ss != nil {
 		s = ss.Get()
+	}
+
+	// 若用户配置了开机自启，启动时重新写一遍 OS 自启配置，
+	// 保证 Exec 路径始终指向当前 exe（应对用户移动/升级程序后路径变化）。
+	if s.AutoStart {
+		if err := appguard.SetAutoStart(true); err != nil {
+			a.log.Warn("reapply autostart", "err", err)
+		}
 	}
 
 	// 静默启动：窗口初始隐藏
@@ -705,6 +715,14 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 		}
 	}
 
+	// 开机自启实时同步：仅在状态变化时写 OS 自启配置，避免重复 I/O。
+	if prev.AutoStart != ns.AutoStart {
+		if err := appguard.SetAutoStart(ns.AutoStart); err != nil {
+			a.log.Error("set autostart", "enabled", ns.AutoStart, "err", err)
+			// 不中断 UpdateSettings，只记录日志
+		}
+	}
+
 	return nil
 }
 
@@ -863,6 +881,27 @@ func (a *App) OpenURL(url string) error {
 	}
 	wailsruntime.BrowserOpenURL(a.ctx, url)
 	return nil
+}
+
+// GetAppVersion 返回当前应用版本（semver 字符串，形如 "0.1.0"）。
+func (a *App) GetAppVersion() string {
+	return updater.Version
+}
+
+// CheckForUpdate 检查 GitHub Releases 是否有更新。
+// 返回结构体中 HasUpdate 为 true 时，前端可展示"新版本可用"提示，
+// 并引导用户点击 ReleaseURL 跳转下载。检测失败（无网络等）返回空结果而非错误，
+// 避免弹错误弹窗；真实错误记录到日志。
+func (a *App) CheckForUpdate() updater.Result {
+	if a.ctx == nil {
+		return updater.Result{CurrentVersion: updater.Version}
+	}
+	res, err := updater.Check(a.ctx, updater.Version)
+	if err != nil {
+		a.log.Warn("check for update", "err", err)
+		return updater.Result{CurrentVersion: updater.Version}
+	}
+	return res
 }
 
 // SaveImageToFile 将图片内容保存到用户选择的位置（通过系统保存对话框）。

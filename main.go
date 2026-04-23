@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
+	"gopaste/internal/appguard"
 	"gopaste/internal/config"
 	"gopaste/internal/settings"
 	"gopaste/internal/window"
@@ -43,6 +44,15 @@ func bootProbe(stage string) {
 func main() {
 	bootProbe("main: enter")
 	defer bootProbe("main: exit")
+
+	// 单实例保护：已有实例在运行时直接退出。
+	// 后续可扩展：通过 IPC 把启动参数转发给已运行实例并请求它激活窗口。
+	if !appguard.AcquireSingleInstance() {
+		bootProbe("main: another instance running, exit")
+		return
+	}
+	defer appguard.Release()
+
 	app := NewApp()
 
 	// 预加载设置以支持静默启动

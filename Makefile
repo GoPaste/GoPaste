@@ -47,7 +47,7 @@ build: ## 构建当前平台
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-win: ## 构建 Windows (amd64)
-	CC=$(WIN_CC) CXX=$(WIN_CXX) \
+	CGO_ENABLED=1 CC=$(WIN_CC) CXX=$(WIN_CXX) \
 	xvfb-run -a $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 

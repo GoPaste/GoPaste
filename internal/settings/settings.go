@@ -26,6 +26,7 @@ type Settings struct {
 	SilentStart       bool     `json:"silentStart"`       // 静默启动（启动时隐藏窗口）
 	ShowTrayIcon      bool     `json:"showTrayIcon"`      // 显示菜单栏/托盘图标
 	ShowTaskbarIcon   bool     `json:"showTaskbarIcon"`   // 显示任务栏图标
+	AutoStart         bool     `json:"autoStart"`         // 开机自启动
 }
 
 // Default 返回默认设置。
@@ -46,6 +47,7 @@ func Default() Settings {
 		SilentStart:       false,
 		ShowTrayIcon:      true,
 		ShowTaskbarIcon:   false,
+		AutoStart:         false,
 	}
 }
 
