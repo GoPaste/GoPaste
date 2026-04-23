@@ -37,13 +37,28 @@ static dispatch_queue_t pasteboardQueue(void) {
 
 // hasFileURLs 仅检查当前剪切板是否存在文件 URL，不分配任何返回内存。
 // 多次调用相当频繁（500ms 轮询 + text 事件探测），必须极度轻量。
+//
+// 【崩溃根因修复 / 2026-04-23】
+// 之前这里是裸 @autoreleasepool + 直接访问 [NSPasteboard generalPasteboard]，
+// 没有走 pasteboardQueue 串行化。其他三个函数（getFileURLs / pasteboardChangeCount
+// / pasteboardHasFileURL）都在 queue 里，唯独这个漏了。
+// 触发链：text watcher 在新文本到达时高频调用本函数（从任意 Go goroutine 线程），
+// 同时 500ms FileWatcher tick 在 pasteboardQueue 里跑 readObjectsForClasses —
+// NSPasteboard 不是线程安全的，其内部缓存的 NSArray 被并发 retain/release 后
+// refcount 归零、另一线程拿到野指针 → EXC_BAD_ACCESS 静默闪退。
+// crash report 里 threadTriggered.queue = "gopaste.pasteboard" 完全印证。
+// 现在把本函数也收进同一个串行 queue，保证所有 NSPasteboard 访问单线程化。
 int hasFileURLs() {
-    @autoreleasepool {
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        NSArray *classes = @[[NSURL class]];
-        NSDictionary *options = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES};
-        return [pb canReadObjectForClasses:classes options:options] ? 1 : 0;
-    }
+    __block int result = 0;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            NSArray *classes = @[[NSURL class]];
+            NSDictionary *options = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES};
+            result = [pb canReadObjectForClasses:classes options:options] ? 1 : 0;
+        }
+    });
+    return result;
 }
 
 // getFileURLs 返回剪切板中的文件路径（换行分隔），无文件返回 NULL。
@@ -101,6 +116,65 @@ long pasteboardChangeCount(void) {
         }
     });
     return result;
+}
+
+// readClipboardImagePNG 读取当前 NSPasteboard 中的图片并以 PNG 字节序列返回。
+// 调用方负责 free() 返回的指针（非 NULL 时）。读不到图片返回 NULL 且 *outLen=0。
+//
+// 【为什么要自己写这个】
+// golang.design/x/clipboard 的 read_image 只查 NSPasteboardTypePNG（public.png）。
+// 但 macOS 系统截图（Cmd+Shift+4/3/5、Preview「复制」、多数 app 的复制图片）
+// 实际写入的是 NSPasteboardTypeTIFF（public.tiff），少数才是 PNG。
+// 于是截图后 golang.design 的 image watcher 收不到事件——表现就是"截图没记录"。
+//
+// 解决策略：先尝试 public.png 直取（最快路径、零拷贝转码）；
+// 没有则尝试 public.tiff，用 NSBitmapImageRep 直接 in-memory 转 PNG。
+// 两者都没有就返回 NULL。
+//
+// 统一走 pasteboardQueue 串行化，避免和 FileWatcher/文本过滤的 NSPasteboard
+// 访问并发（见文件顶部注释的崩溃根因）。
+const void* readClipboardImagePNG(unsigned long *outLen) {
+    __block void *bytes = NULL;
+    __block unsigned long len = 0;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+
+            // 1) 直接拿 PNG
+            NSData *png = [pb dataForType:NSPasteboardTypePNG];
+            if (png != nil && png.length > 0) {
+                len = (unsigned long)png.length;
+                bytes = malloc(len);
+                if (bytes != NULL) {
+                    memcpy(bytes, png.bytes, len);
+                }
+                return;
+            }
+
+            // 2) 退化到 TIFF（截图/Preview 默认格式）并转 PNG
+            NSData *tiff = [pb dataForType:NSPasteboardTypeTIFF];
+            if (tiff == nil || tiff.length == 0) {
+                return;
+            }
+            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiff];
+            if (rep == nil) {
+                return;
+            }
+            NSData *conv = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            if (conv == nil || conv.length == 0) {
+                return;
+            }
+            len = (unsigned long)conv.length;
+            bytes = malloc(len);
+            if (bytes != NULL) {
+                memcpy(bytes, conv.bytes, len);
+            }
+        }
+    });
+    if (outLen != NULL) {
+        *outLen = len;
+    }
+    return bytes;
 }
 
 // pasteboardHasFileURL 判断当前 pasteboard 是否含有 fileURL。
@@ -217,4 +291,26 @@ func pasteboardHasFile() bool {
 	has := C.pasteboardHasFileURL() != 0
 	hasFileCache.Store(encodeHasFile(cc, has))
 	return has
+}
+
+// pollClipboardImagePNG 读取当前剪切板中的图片并返回 PNG 字节。
+// 若当前剪切板没有图片（或非图片 / 非可识别格式）返回 nil。
+// 优先读 PNG，退化到 TIFF → PNG 转换，覆盖 macOS 系统截图场景。
+//
+// 上层 Watcher 会结合 changeCount 去重，只在"changeCount 变化 且
+// 不是文件事件"时才调用本函数，避免不必要的 TIFF→PNG 转码开销。
+func pollClipboardImagePNG() []byte {
+	var n C.ulong
+	p := C.readClipboardImagePNG(&n)
+	if p == nil || n == 0 {
+		return nil
+	}
+	defer C.free(unsafe.Pointer(p))
+	return C.GoBytes(p, C.int(n))
+}
+
+// pasteboardChangeCountGo 暴露 changeCount 给 Go 侧 watcher loop 使用。
+// 纯 int64 返回，避免多处 import "C"。
+func pasteboardChangeCountGo() int64 {
+	return int64(C.pasteboardChangeCount())
 }

@@ -51,7 +51,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 	}
 
 	textCh := clipboard.Watch(ctx, clipboard.FmtText)
-	imageCh := clipboard.Watch(ctx, clipboard.FmtImage)
+	// 图片监听走平台特化实现（见 imagewatch_{darwin,other}.go）。
+	// darwin 上 golang.design/x/clipboard 只识别 public.png，漏掉系统截图
+	// 这种 public.tiff 场景——那里改由我们自己轮询并做 TIFF→PNG 转换。
+	imageCh := startImageWatch(ctx)
 
 	go w.loop(ctx, textCh, imageCh)
 	return nil

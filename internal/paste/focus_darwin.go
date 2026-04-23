@@ -2,100 +2,45 @@
 
 package paste
 
-/*
-#cgo CFLAGS: -x objective-c -fmodules
-#cgo LDFLAGS: -framework AppKit
-#import <AppKit/AppKit.h>
-#include <dispatch/dispatch.h>
-#include <pthread.h>
-
-// -----------------------------------------------------------------------------
-// 背景 / 为什么这样写
-// -----------------------------------------------------------------------------
-// macOS 上粘贴前恢复焦点踩过三种坑：
+// macOS 侧的"粘贴前恢复焦点"已整体废弃。
 //
-//   1) 在自建串行队列上跑 AppKit API
-//      → 新版 macOS 会 __builtin_trap，进程被内核 kill、无日志。
+// 背景：
+//   我们把主窗口改造成了 NSPanel + NSWindowStyleMaskNonactivatingPanel
+//   （见 internal/window/panel_darwin.m）。面板显示时**不会夺走前台应用
+//   的 active 状态**，所以根本不存在"前一个应用"这回事——用户原先在编
+//   辑的那个 app 自始至终就是 active。PasteItem 的 mac 分支里 orderOut
+//   面板后直接 CGEventPost Cmd+V，目标就是正确的应用。
 //
-//   2) dispatch_sync(main_queue, ...) 从 cgo 线程等主队列
-//      → 在 Wails v2 下，调用链里 WindowHide 等操作可能暂时让主线程无法
-//        pump main queue，于是 dispatch_sync 永远不返回，系统看门狗
-//        最终把进程杀掉（同样不落 crash report）。
+// 为什么这里还保留类型 + 函数：
+//   保持 internal/paste 包在三端的 API 一致（CapturePreviousWindow /
+//   RestorePreviousWindow / PreviousWindow.IsValid），让 app.go 里 mac
+//   分支短路即可，不用加额外的 build tag。实际不会被调用——见
+//   app.captureFocusBeforeShow() 里的 darwin 早退。
 //
-//   3) 直接在 cgo 线程调 -[NSRunningApplication activateWithOptions:]
-//      → 等同于 (1)。
-//
-// 结论：用 dispatch_async 异步扔到主队列、不阻塞调用方。我们只是"让
-// 前一个 app 前台起来"，本来就不在乎它是否瞬时完成——Go 这边会睡
-// 80ms 让焦点切换落地，已经足够。
-//
-// 为什么不用 pthread_main_np + 就地执行的组合：cgo 线程绝大多数
-// 情况下不是主线程，这个分支白写；而若真在主线程，dispatch_async
-// 也能正确执行（runloop 下一轮 tick 就跑），不会死锁。统一一条路径
-// 更稳。
-// -----------------------------------------------------------------------------
+// 为什么不再动用 AppKit：
+//   此前实现走过三条都会崩的路径：
+//     1) 自建串行队列上跑 AppKit API → __builtin_trap
+//     2) cgo 线程 dispatch_sync(main) → 与 WindowHide 组合成死锁 → 看门狗杀
+//     3) cgo 线程直接调 activateWithOptions → 同 1
+//   既然新架构下根本不需要 activate，索性把 cgo 全部移除，消除整条
+//   风险链。
 
-// 返回当前最前台应用的 PID。
-// frontmostApplication 的内部读取对外线程安全，这里不强制走主队列，
-// 避免被主线程卡住时连抓取都失败。
-static int paste_get_frontmost_pid(void) {
-    @autoreleasepool {
-        NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
-        if (app) {
-            return (int)[app processIdentifier];
-        }
-    }
-    return 0;
-}
+import "fmt"
 
-// 把指定 PID 的应用切到前台。
-// 异步派发到主队列执行；Go 侧等 80ms 让 AppKit 处理完。
-// 返回值恒为 1（"已调度"），真正的成功与否靠上层看粘贴效果。
-static int paste_activate_pid(int pid) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @autoreleasepool {
-            NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-            if (app) {
-                [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-            }
-        }
-    });
-    return 1;
-}
-*/
-import "C"
+// PreviousWindow 跨平台句柄。Mac 上始终为零值。
+type PreviousWindow struct{}
 
-import (
-	"fmt"
-	"time"
-)
+// IsValid 恒为 false —— mac 上没有需要恢复的"前一个窗口"。
+func (PreviousWindow) IsValid() bool { return false }
 
-// PreviousWindow 跨平台句柄。Mac 上是被遮挡的应用 PID。
-type PreviousWindow struct {
-	pid int
-}
-
-// IsValid 是否有效。
-func (p PreviousWindow) IsValid() bool { return p.pid > 0 }
-
-// CapturePreviousWindow 抓当前最前台 app 的 PID。
+// CapturePreviousWindow 在 mac 下是 no-op，返回空句柄与固定错误。
+// 调用方（app.captureFocusBeforeShow）已经在 mac 下短路，不会实际调到这里。
+// 保留错误返回只是给任何意外调用一个明确的信号。
 func CapturePreviousWindow() (PreviousWindow, error) {
-	pid := int(C.paste_get_frontmost_pid())
-	if pid <= 0 {
-		return PreviousWindow{}, fmt.Errorf("focus: no frontmost app")
-	}
-	return PreviousWindow{pid: pid}, nil
+	return PreviousWindow{}, fmt.Errorf("focus: not applicable on macOS (NSPanel NonactivatingPanel)")
 }
 
-// RestorePreviousWindow 把焦点切回先前的应用。
-func RestorePreviousWindow(p PreviousWindow) error {
-	if !p.IsValid() {
-		return fmt.Errorf("focus: invalid pid")
-	}
-	if C.paste_activate_pid(C.int(p.pid)) == 0 {
-		return fmt.Errorf("focus: activate pid=%d failed", p.pid)
-	}
-	// 等焦点切完
-	time.Sleep(80 * time.Millisecond)
+// RestorePreviousWindow 在 mac 下是 no-op。
+func RestorePreviousWindow(PreviousWindow) error {
 	return nil
 }

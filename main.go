@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"syscall"
 	"time"
 
 	"github.com/wailsapp/wails/v2"
@@ -44,6 +47,29 @@ func bootProbe(stage string) {
 func main() {
 	bootProbe("main: enter")
 	defer bootProbe("main: exit")
+
+	// 静默死亡诊断：
+	//  - SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT：CGo / AppKit 内部断言失败、野指针、
+	//    非主线程访问 UI 等都会落到这里。Go runtime 默认是 print trace 后 exit(2)。
+	//  - SIGKILL：系统强杀（Activity Monitor、jetsamd、CPU wakeup 超阈等），
+	//    进程收不到 —— 但如果不是 SIGKILL，以下 handler 会抢先把堆栈写进 boot log。
+	//  - SIGTERM/SIGHUP/SIGINT：我们正常响应关机信号，写一行日志再 exit。
+	debug.SetTraceback("crash") // 等价于 GOTRACEBACK=crash，崩溃时 dump 所有 goroutine
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh,
+		syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP,
+		syscall.SIGABRT, syscall.SIGPIPE,
+	)
+	go func() {
+		for s := range sigCh {
+			bootProbe(fmt.Sprintf("main: SIGNAL %s", s))
+			if s == syscall.SIGTERM || s == syscall.SIGINT || s == syscall.SIGHUP {
+				// 正常退出，给 Wails 一点时间跑 OnShutdown。1.5s 后强退兜底。
+				go func() { time.Sleep(1500 * time.Millisecond); os.Exit(130) }()
+				return
+			}
+		}
+	}()
 
 	// 单实例保护：已有实例在运行时直接退出。
 	// 后续可扩展：通过 IPC 把启动参数转发给已运行实例并请求它激活窗口。

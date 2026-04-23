@@ -42,17 +42,31 @@ debug: ## 启动开发模式 + 开启 DevTools
 	$(WAILS) dev -devtools
 
 # ============== 构建 ==============
+# xvfb-run 仅在 Linux 宿主（无 DISPLAY 的 CI / headless 环境）下需要，
+# macOS / Windows 根本没这命令。用 uname 判断宿主，mac 走 build-mac 的
+# unset GOROOT 流程（避免 toolchain 目录污染 Wails 构建）。
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+	XVFB := xvfb-run -a
+else
+	XVFB :=
+endif
+
 build: ## 构建当前平台
-	xvfb-run -a $(WAILS) build -clean $(WAILS_FLAGS)
+ifeq ($(UNAME_S),Darwin)
+	unset GOROOT; $(WAILS) build -clean $(WAILS_FLAGS)
+else
+	$(XVFB) $(WAILS) build -clean $(WAILS_FLAGS)
+endif
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-win: ## 构建 Windows (amd64)
 	CGO_ENABLED=1 CC=$(WIN_CC) CXX=$(WIN_CXX) \
-	xvfb-run -a $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
+	$(XVFB) $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
 build-win-arm: ## 构建 Windows (arm64)
-	xvfb-run -a $(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
+	$(XVFB) $(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
 build-mac: ## 构建 macOS (universal) ⚠️ 需在 macOS 上运行
@@ -69,7 +83,7 @@ build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
 	unset GOROOT; $(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
 
 build-linux: ## 构建 Linux (amd64)
-	xvfb-run -a $(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
+	$(XVFB) $(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac 上单独构建或用 CI）

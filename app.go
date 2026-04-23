@@ -66,6 +66,10 @@ type App struct {
 	// 在 macOS 上实测会触发硬崩（进程被系统直接杀掉，不写 panic）。
 	// 这里用 TryLock 保证同时只有一次 PasteItem 在跑，重入直接忽略。
 	pasteMu sync.Mutex
+
+	// macOS 辅助功能权限引导对话框去重：进程内只弹一次。
+	// 详见 showAccessibilityGuide() 的注释。
+	accessGuideOnce sync.Once
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
@@ -182,6 +186,12 @@ func (a *App) startup(ctx context.Context) {
 
 	// 8) Windows 任务栏图标显隐（需要 HWND 就绪后再应用；轮询 3 秒内生效）
 	go a.applyTaskbarIconWithRetry()
+
+	// 9) macOS：把主窗口改造成 NSPanel + NonactivatingPanel。
+	// 这样"显示面板"不会抢走前台应用的 active 状态，粘贴时也就不再需要
+	// hide + activate 的回环（那才是 mac 上反复闪退的根源）。
+	// Wails startup 回调不保证 NSWindow 已挂到 [NSApp windows]，所以轮询。
+	go a.convertMainWindowToPanelWithRetry()
 
 	a.log.Info("GoPaste started", "data", paths.Root)
 }
@@ -400,7 +410,7 @@ func (a *App) togglePanel() {
 	if wailsruntime.WindowIsMinimised(a.ctx) {
 		a.captureFocusBeforeShow()
 		wailsruntime.WindowUnminimise(a.ctx)
-		wailsruntime.WindowShow(a.ctx)
+		window.ShowMain(a.ctx)
 		a.positionWindow()
 		a.setVisible(true)
 		return
@@ -411,11 +421,11 @@ func (a *App) togglePanel() {
 
 	if visible {
 		a.saveWindowPosition()
-		wailsruntime.WindowHide(a.ctx)
+		window.HideMain(a.ctx)
 		a.setVisible(false)
 	} else {
 		a.captureFocusBeforeShow()
-		wailsruntime.WindowShow(a.ctx)
+		window.ShowMain(a.ctx)
 		a.positionWindow()
 		a.setVisible(true)
 	}
@@ -430,14 +440,21 @@ func (a *App) showPanel() {
 		wailsruntime.WindowUnminimise(a.ctx)
 	}
 	a.captureFocusBeforeShow()
-	wailsruntime.WindowShow(a.ctx)
+	window.ShowMain(a.ctx)
 	a.positionWindow()
 	a.setVisible(true)
 }
 
 // captureFocusBeforeShow 在窗口显示前抓住当前前台窗口，便于稍后粘贴时还原焦点。
 // 必须在 WindowShow 之前调用，否则抓到的就是本应用自己。
+//
+// macOS 下 ****不需要也不应该**** 做 capture/restore：主窗口已被改造成
+// NonactivatingPanel，显示面板不会抢走前台应用的 active 状态，所以"前一
+// 个窗口"从未丢过焦点，restore 反而是多余的 AppKit 调用、曾是闪退来源。
 func (a *App) captureFocusBeforeShow() {
+	if runtime.GOOS == "darwin" {
+		return
+	}
 	pw, err := paste.CapturePreviousWindow()
 	if err != nil {
 		a.log.Warn("focus: capture failed", "err", err)
@@ -468,6 +485,31 @@ func (a *App) isVisible() bool {
 	a.visMu.Lock()
 	defer a.visMu.Unlock()
 	return a.windowVisible
+}
+
+// convertMainWindowToPanelWithRetry 在 macOS 启动阶段把 NSWindow 改造成
+// NonactivatingPanel。调用是幂等的，我们只要在 NSWindow 已经被 AppKit
+// 注册到 [NSApp windows] 之后做一次即可。
+// 其他平台下 window.ConvertToNonactivatingPanel 是 no-op，这里整个函数
+// 也是早退，不做任何事。
+func (a *App) convertMainWindowToPanelWithRetry() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	// Wails 创建 NSWindow 的时机略晚于 OnStartup 回调——startup 刚调用时
+	// [NSApp windows] 可能还没收录主窗口。给 3 秒轮询足够宽裕，正常情况
+	// 下首次尝试就能命中。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		// ConvertToNonactivatingPanel 内部自己找窗口；没找到是 NSLog 警告，
+		// 不抛错。这里我们靠"主窗口已经存在"这一外部事实来判断是否成功，
+		// 简单起见固定等 300ms 再做一次，幂等不会出错。
+		window.ConvertToNonactivatingPanel(window.Title)
+		time.Sleep(300 * time.Millisecond)
+		// 做第二次兜底（覆盖 Wails 延迟创建窗口的情形），然后退出。
+		window.ConvertToNonactivatingPanel(window.Title)
+		return
+	}
 }
 
 // applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。
@@ -615,6 +657,30 @@ func (a *App) PasteItem(id int64) error {
 
 	bootProbeApp(fmt.Sprintf("PasteItem: enter id=%d", id))
 	a.log.Info("paste: enter", "id", id)
+
+	// macOS：辅助功能权限预检。
+	// CGEventPost 注入 Cmd+V 需要 Accessibility 授权。之前的实现把检查放
+	// 在 SendPaste 里——那已经太晚了：此时面板已经 HideMain 了，用户看到
+	// 的现象是"点击历史项 → 面板消失 → 原应用里什么都没贴上"，不知道
+	// 发生了什么。**这才是用户报的"闪退"真相**——面板消失 ≠ 进程退出。
+	//
+	// 现在改成"进入 PasteItem 就预检"：
+	//   1) PromptAccessibility() 首次调用会弹系统权限框（幂等，进程内只弹一次）
+	//   2) HasAccessibility() 没通过 → 弹 Wails 对话框引导用户到系统设置
+	//      → **不 HideMain、不 SendPaste、不改剪贴板** → 下次用户授权后重试即可
+	//
+	// 这个检查在所有平台都会跑，但只有 darwin 会真的拦住（其他平台
+	// HasAccessibility 恒为 true）。
+	if runtime.GOOS == "darwin" {
+		paste.PromptAccessibility() // 首次会弹系统框；已授权则是 no-op
+		if !paste.HasAccessibility() {
+			bootProbeApp("PasteItem: blocked by accessibility")
+			a.log.Warn("paste: blocked by accessibility permission")
+			go a.showAccessibilityGuide() // 异步，不阻塞 RPC 返回
+			return paste.ErrNoAccessibility
+		}
+	}
+
 	if err := a.CopyToClipboard(id); err != nil {
 		bootProbeApp("PasteItem: copy err=" + err.Error())
 		a.log.Warn("paste: copy to clipboard failed", "id", id, "err", err)
@@ -627,44 +693,89 @@ func (a *App) PasteItem(id int64) error {
 	bootProbeApp(fmt.Sprintf("PasteItem: ready trigger=%s", s.PasteTrigger))
 	a.log.Info("paste: ready", "id", id, "pasteTrigger", s.PasteTrigger)
 
-	// 取出展示前抓到的"前一个窗口"
+	// 取出展示前抓到的"前一个窗口"（macOS 下永远是零值，captureFocusBeforeShow
+	// 在 mac 下短路）。
 	prev := a.takePrevFocus()
 	prevValid := prev.IsValid()
 	bootProbeApp(fmt.Sprintf("PasteItem: prevFocus valid=%v", prevValid))
 
-	// 隐藏面板，让出前台。
-	// 注意：只在"当前确实可见"时才调用 WindowHide。否则在 macOS 下连续调用两次 Hide
-	// （比如上一次粘贴后用户又很快触发了一次）有概率让 Wails 的窗口状态机走进
-	// "最后一个窗口关闭 → applicationShouldTerminateAfterLastWindowClosed:"
-	// 路径，AppKit 直接 [NSApp terminate:] ——进程没走我们的 shutdown、也没
-	// 落 crash report，表现就是"闪退"。
-	if a.ctx != nil && a.isVisible() {
-		a.saveWindowPosition()
-		bootProbeApp("PasteItem: before WindowHide")
-		wailsruntime.WindowHide(a.ctx)
-		bootProbeApp("PasteItem: after WindowHide")
-		a.setVisible(false)
-	} else {
-		bootProbeApp("PasteItem: skip WindowHide (already hidden)")
-	}
-
-	// 把焦点切回前一个应用——Windows/Linux 在 WindowHide 后焦点不会自动回到上一个窗口，
-	// 必须显式 SetForegroundWindow / activate；否则 Ctrl+V 发到桌面，永远粘不出来。
-	if prevValid {
-		// 给系统一点时间处理 Hide
-		time.Sleep(80 * time.Millisecond)
-		bootProbeApp("PasteItem: before RestorePreviousWindow")
-		err := paste.RestorePreviousWindow(prev)
-		bootProbeApp("PasteItem: after RestorePreviousWindow")
-		if err != nil {
-			bootProbeApp("PasteItem: restore focus err=" + err.Error())
-			a.log.Warn("paste: restore focus failed", "err", err)
+	// 隐藏面板 + 切回焦点，分平台走不同流程。
+	if runtime.GOOS == "darwin" {
+		// macOS：最终方案（2026-04-23 第 3 次迭代）。
+		//
+		// 历史踩坑轨迹（务必保留这段，否则后人还会再翻一遍）：
+		//
+		//   v1（CGEventPost + orderOut）
+		//     - orderOut 后面板在 AppKit 里仍是 keyWindow；
+		//     - CGEventPost 盲注 Cmd+V，落回自己 WebView；
+		//     - 前端被触发 → 递归调 PasteItem → HID flood → SIGKILL。
+		//     - 表现：粘几次后无声闪退，无 crash report，无 log show 事件。
+		//
+		//   v2（osascript + resignKey，面板不隐藏）
+		//     - 想照抄 EcoPaste "只 resign 不 hide"。
+		//     - 结果：NSPanel+NonactivatingPanel 上 resignKeyWindow 基本是 no-op
+		//       ——面板仍在屏幕上、仍是 frontmost process、仍是 key window。
+		//     - osascript 的 keystroke 通过 System Events 查 frontmost process
+		//       得到的是 GoPaste 自己，Cmd+V 仍然打回 WebView。
+		//     - 表现：同 v1，依然闪退。日志止步于 "sent"。
+		//
+		//   v3（当前）—— osascript + orderOut 先行
+		//     关键洞察：System Events 的 `keystroke "v" using command down` 是
+		//     查询"谁是当前 frontmost process"后定向投递。只要面板**不是 frontmost**，
+		//     就不会打回自己。最干脆的保证办法就是 orderOut: 把面板从屏幕上
+		//     移走——此时 AppKit 自动把 frontmost 交给下一个可见 app。
+		//
+		//     为什么 v3 的 orderOut 不会重蹈 v1 覆辙：
+		//       v1 翻车是因为 CGEventPost 是盲注 HID，谁是 key 谁收。
+		//       v3 用的 osascript/System Events 走 AppleEvent，System Events
+		//       自己的 AXUIElement 逻辑会挑"frontmost process"（面板已 orderOut
+		//       → 不算 frontmost），键事件定向投递到目标 app，不会回落到 GoPaste。
+		//
+		//     流程：orderOut → 120ms sleep → osascript Cmd+V。不需要 resign、
+		//     不需要异步再 hide、不需要追踪 prevFocus。
+		if a.ctx != nil && a.isVisible() {
+			a.saveWindowPosition()
+			bootProbeApp("PasteItem: before HideMain (mac/panel)")
+			window.HideMain(a.ctx)
+			a.setVisible(false)
+			bootProbeApp("PasteItem: after HideMain (mac/panel)")
 		} else {
-			bootProbeApp("PasteItem: focus restored")
+			bootProbeApp("PasteItem: skip HideMain (already hidden)")
 		}
+		// 120ms：给 AppKit 的 orderOut 走完 + WindowServer 更新 frontmost
+		// 进程排序 + 目标 app 的 windowDidBecomeKey 回调链。
+		// 经验值：40ms 时 osascript 偶尔仍把键发到 Dock/背景；80ms 稳定；
+		// 120ms 留余量（对用户不可感知）。
+		time.Sleep(120 * time.Millisecond)
 	} else {
-		// 没抓到（首次 / 异常）只能盲目等焦点漂回去
-		time.Sleep(150 * time.Millisecond)
+		// Windows / Linux：WindowHide 后焦点不会自动回到上一个窗口，
+		// 必须显式 SetForegroundWindow / xdotool activate，否则 Ctrl+V
+		// 发到桌面，永远粘不出来。
+		if a.ctx != nil && a.isVisible() {
+			a.saveWindowPosition()
+			bootProbeApp("PasteItem: before WindowHide")
+			wailsruntime.WindowHide(a.ctx)
+			bootProbeApp("PasteItem: after WindowHide")
+			a.setVisible(false)
+		} else {
+			bootProbeApp("PasteItem: skip WindowHide (already hidden)")
+		}
+		if prevValid {
+			// 给系统一点时间处理 Hide
+			time.Sleep(80 * time.Millisecond)
+			bootProbeApp("PasteItem: before RestorePreviousWindow")
+			err := paste.RestorePreviousWindow(prev)
+			bootProbeApp("PasteItem: after RestorePreviousWindow")
+			if err != nil {
+				bootProbeApp("PasteItem: restore focus err=" + err.Error())
+				a.log.Warn("paste: restore focus failed", "err", err)
+			} else {
+				bootProbeApp("PasteItem: focus restored")
+			}
+		} else {
+			// 没抓到（首次 / 异常）只能盲目等焦点漂回去
+			time.Sleep(150 * time.Millisecond)
+		}
 	}
 
 	bootProbeApp("PasteItem: before SendPaste")
@@ -675,6 +786,8 @@ func (a *App) PasteItem(id int64) error {
 	}
 	bootProbeApp(fmt.Sprintf("PasteItem: sent id=%d", id))
 	a.log.Info("paste: sent", "id", id)
+	// mac 分支面板已在 SendPaste 之前 orderOut，这里无需再 hide。
+	// 非 mac 分支原本就是 WindowHide 先行。
 	return nil
 }
 
@@ -722,7 +835,7 @@ func (a *App) ClearHistory() error {
 func (a *App) HideWindow() {
 	if a.ctx != nil {
 		a.saveWindowPosition()
-		wailsruntime.WindowHide(a.ctx)
+		window.HideMain(a.ctx)
 		a.setVisible(false)
 	}
 }
@@ -870,6 +983,77 @@ func (a *App) showAbout() {
 		Message: "GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。",
 		Buttons: []string{"确定"},
 	})
+}
+
+// showAccessibilityGuide 在 macOS 未授权辅助功能时弹框引导用户授权。
+// 点击"打开系统设置"会直达"隐私与安全 → 辅助功能"面板。
+//
+// 这个函数被 PasteItem 在 early-exit 时 goroutine 启动——不能在 RPC 调用栈
+// 内直接弹（MessageDialog 是 modal，会阻塞 Wails 的 RPC 处理，前端调用看起来
+// 就像"hang 住了"）。异步起 goroutine，RPC 立即带 ErrNoAccessibility 返回，
+// 前端可以在 toast 里展示错误、用户看到系统弹框去授权即可。
+//
+// 进程内只弹一次引导框：一旦弹过就靠 promptOnce（系统层 prompt=YES 弹框），
+// 以及我们自己的 accessGuideOnce（应用层引导弹框），都只执行一次，避免
+// 用户每次按粘贴都被两层弹框轰炸。
+func (a *App) showAccessibilityGuide() {
+	if runtime.GOOS != "darwin" || a.ctx == nil {
+		return
+	}
+	a.accessGuideOnce.Do(func() {
+		// 文案重点：用户最常踩的坑是"明明列表里 GoPaste 的开关是开的，
+		// 程序却一直报未授权"。这是因为 GoPaste 当前用的是 **ad-hoc 签名**
+		// （`codesign -dvvv` 能看到 `Signature=adhoc` / `TeamIdentifier=not set`），
+		// macOS 的 TCC 数据库按代码签名的 CDHash 记录授权——每次重新 `wails
+		// build` 产生的二进制 CDHash 和上次可能不一样，于是 TCC 里那条旧记录
+		// 的"签名要求"（csreq）就和当前进程对不上，系统内部判定为"未授权"，
+		// 但列表 UI 是按 bundle id 显示的，开关仍然"亮"。
+		//
+		// 唯一稳定的解决办法：让用户**把列表里的 GoPaste 条目删掉再重新授权**，
+		// 这样 TCC 会按当前 binary 的 CDHash 重建记录。
+		//
+		// 长期方案是上 Apple 开发者证书做正式签名（TeamID 稳定 = TCC 永远对得上），
+		// 但这不是一次对话能解决的事，先保证用户能用。
+		sel, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
+			Type:  wailsruntime.WarningDialog,
+			Title: "需要重新授权辅助功能",
+			Message: "GoPaste 需要「辅助功能」权限才能模拟 Cmd+V 完成自动粘贴。\n\n" +
+				"⚠️ 如果你已经在列表里勾选过 GoPaste，仍然看到此提示，\n" +
+				"这是因为 GoPaste 每次重新构建后签名会变化，系统之前保存的\n" +
+				"授权记录和当前版本对不上了。\n\n" +
+				"【解决方法】\n" +
+				"1. 点击下方「打开系统设置」\n" +
+				"2. 在「辅助功能」列表里找到 GoPaste，选中后点 −（减号）删除\n" +
+				"3. 回到 GoPaste 再按一次粘贴，系统会重新弹框请求授权\n" +
+				"4. 这次勾选后即可正常使用（直到下次重新构建）",
+			Buttons:       []string{"打开系统设置", "稍后"},
+			DefaultButton: "打开系统设置",
+			CancelButton:  "稍后",
+		})
+		if err != nil {
+			a.log.Warn("accessibility guide: dialog err", "err", err)
+			return
+		}
+		if sel == "打开系统设置" {
+			// x-apple.systempreferences URL scheme 直达"辅助功能"面板。
+			// 适用 macOS 13+（Ventura 起）和旧版的 Security & Privacy。
+			wailsruntime.BrowserOpenURL(a.ctx,
+				"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+		}
+	})
+}
+
+// HasPastePermission 前端 RPC：查询当前是否具备模拟粘贴所需权限。
+// mac 下反映 Accessibility 授权状态；其他平台恒 true。
+// 前端可在设置页显示权限指示灯，或在"自动粘贴"开关旁提示未授权。
+func (a *App) HasPastePermission() bool {
+	return paste.HasAccessibility()
+}
+
+// RequestPastePermission 前端 RPC：主动触发一次系统权限弹框。
+// 用户在设置页点击"授予权限"按钮时调用。已授权则 no-op。
+func (a *App) RequestPastePermission() bool {
+	return paste.PromptAccessibility()
 }
 
 // quitApp 托盘点击"退出"时调用：走正常的 Wails 关闭流程，若一段时间内未退出则强制 os.Exit。

@@ -537,8 +537,8 @@ onMounted(load)
   border-bottom: 1px solid var(--bg-elevated);
   flex-shrink: 0; user-select: none;
 }
-[data-os="mac"] .pref-titlebar { padding-left: 80px; }
-[data-os="mac"] .titlebar-close { display: none; }
+/* 原先 Mac 下给红黄绿按钮预留 80px 并隐藏自定义关闭按钮；
+   traffic lights 已统一隐藏，关闭按钮在所有平台一致显示。 */
 .titlebar-icon { color: var(--text-muted); }
 .titlebar-text { font-size: 13px; color: var(--text-secondary); flex: 1; }
 .titlebar-close {

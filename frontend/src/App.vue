@@ -311,7 +311,12 @@ async function doRevealFile(it: Item) {
   } catch (e) { console.error(e) }
 }
 async function doSaveImage(it: Item) {
-  try { await SaveImageToFile(it.id) } catch (e) { console.error(e) }
+  // 见 suppressBlurHide 的注释：期间禁用自动隐藏，避免主面板被 orderOut
+  // 导致依附其上的 NSSavePanel sheet 被一起隐藏。
+  suppressBlurHide.value++
+  try { await SaveImageToFile(it.id) }
+  catch (e) { console.error(e) }
+  finally { suppressBlurHide.value-- }
 }
 
 // 备注弹窗
@@ -372,6 +377,15 @@ const theme = ref<'dark' | 'light'>('dark')
 
 // 窗口置顶
 const alwaysOnTop = ref(false)
+
+// 原生系统对话框（NSSavePanel / OpenFileDialog 等）会抢走 WebView 焦点，
+// 此时必须**临时**禁用 onWindowBlur 的自动隐藏，否则：
+//   1. 点"保存图片"→ 后端调 Wails SaveFileDialog（beginSheetModalForWindow 附着主窗口）
+//   2. WebView 失焦 → onWindowBlur 150ms 后 HideWindow() → orderOut 主面板
+//   3. sheet 依附的 window 被 orderOut，save 对话框跟着一起不可见
+//      ——用户看到的现象就是"点了保存没反应 / 什么都没发生"。
+// 用 counter 而非 bool，允许多个异步原生对话框嵌套（虽然当前只有一个）。
+const suppressBlurHide = ref(0)
 
 function toggleAlwaysOnTop() {
   alwaysOnTop.value = !alwaysOnTop.value
@@ -517,8 +531,10 @@ function metaParts(it: Item): string[] {
 // 窗口失焦自动隐藏
 function onWindowBlur() {
   if (alwaysOnTop.value) return
+  if (suppressBlurHide.value > 0) return  // 原生对话框打开期间不自动隐藏
   setTimeout(() => {
     if (!document.hasFocus()) {
+      if (suppressBlurHide.value > 0) return  // 延迟期间也可能新开了 dialog
       HideWindow()
     }
   }, 150)
@@ -778,7 +794,8 @@ html, body, #app {
 }
 
 .topbar { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); align-items: center; }
-[data-os="mac"] .topbar { padding-left: 80px; }
+/* 过去 Mac 下给红黄绿按钮预留了 80px，现在按钮已在 panel_darwin.m 里隐藏，
+   这里不再需要 padding-left 偏移。 */
 .search { flex: 1; display: flex; align-items: center; gap: 6px; background: var(--bg-elevated); border-radius: 8px; padding: 6px 10px; }
 .search input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-size: 14px; }
 .search-icon { color: var(--text-muted); flex-shrink: 0; }

@@ -13,11 +13,12 @@
 - [x] **开机自启动** ✅ 已接入 `emersion/go-autostart`（`internal/appguard/autostart.go`），设置页通用面板有开关。启动时会重新写入当前 exe 路径，兼容移动/升级。
 - [x] **单实例保护** ✅ 已接入 `allan-simon/go-singleinstance`（`internal/appguard/singleinstance.go`），main.go 启动最早期检测，已有实例时直接 exit。
 - [x] **自动更新检测** ✅ 已接入 `creativeprojects/go-selfupdate`（`internal/updater/`），关于页提供"检查更新"按钮。只做检测不自动替换 binary（安全起见让用户跳浏览器下载）。
-- [ ] **macOS 辅助功能权限引导**
-  首次启动粘贴会静默失败（因为没授权），用户懵逼。需要：
-  - 调 `AXIsProcessTrusted` 检测
-  - 没权限时弹窗引导"设置 → 隐私与安全性 → 辅助功能 → 勾选 GoPaste"
-  - 可给"打开设置"按钮直跳 `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`
+- [x] **macOS 辅助功能权限引导** ✅ 已做：
+  - `internal/paste/paste_darwin.go` 提供 `HasAccessibility()`（静默查）和 `RequestAccessibility()`（带系统弹框）两个 C 桥
+  - `internal/paste/paste.go` `PasteItem()` 入口预检权限，未通过返回 `ErrNoAccessibility` 并异步触发引导弹框
+  - `app.go` `showAccessibilityGuide()` 用 `sync.Once` 保证一次启动内只弹一次；"打开系统设置"按钮直跳 `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`
+  - `app.go` `HasPastePermission()` / `RequestPastePermission()` 暴露为前端 RPC，方便 UI 主动查询
+  - **坑点**：ad-hoc 签名下 TCC 按 CDHash 匹配，每次 rebuild 后"列表里勾着 ✓ 但系统仍判未授权"——引导文案已写明"先在列表里点 − 删除旧记录再重新授权"，完整说明见 `docs/macos-accessibility.md`
 
 ### Bug 类
 
@@ -159,6 +160,11 @@
 - [x] UI 打磨：快捷键输入框字号、设置页圆角对齐、移除冗余键盘 icon
 - [x] 拉伸黑边修复（BackgroundColour 改浅灰）
 - [x] EcoPaste 跨平台实现分析文档（`docs/ecopaste-analysis.md`）
+- [x] **macOS 粘贴从 CGEventPost 切换到 osascript + resignKey 路线**（2026-04-23）
+  - 症状：前版用 `CGEventPost(kCGHIDEventTap)` 注入 Cmd+V，orderOut 后面板仍是 keyWindow，键事件回落到自己 → 前端被触发再调 `PasteItem` → 死循环 → 被 WindowServer 以 HID flood 为由 SIGKILL，无 crash report，表现为"粘几次后闪退"
+  - 参考 EcoPaste（`src-tauri/src/plugins/paste/src/commands/macos.rs`）的做法
+  - 现在流程：`copy → ResignMainKey → sleep 50ms → osascript 'System Events keystroke v using command down' → 异步 HideMain`
+  - 代码：`internal/paste/paste_darwin.go` 全部改写；`app.go` `PasteItem` mac 分支重写；`internal/window/panel_darwin.m` 的 `GoPasteResignKey` + `internal/window/showhide_darwin.go` 的 `ResignMainKey` 被正式接线
 
 ---
 
