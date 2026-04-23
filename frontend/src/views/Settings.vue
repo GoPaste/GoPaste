@@ -639,8 +639,9 @@ onMounted(load)
 .card-row.stack .desc-inline { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 .card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-row .path {
-  max-width: 70%; text-align: right;
+  flex: 1; min-width: 0; margin-left: 12px; text-align: right;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }
