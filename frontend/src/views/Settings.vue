@@ -570,8 +570,9 @@ onMounted(load)
 .hotkey-recorder:hover { border-color: var(--accent); }
 .hotkey-recorder.recording { border-color: var(--warning); background: var(--bg-elevated); }
 .hotkey-display {
-  font-size: 15px; font-weight: 600; color: var(--text);
+  font-size: 12px; font-weight: 600; color: var(--text);
   font-family: 'SF Mono', 'Consolas', monospace; letter-spacing: 1px;
+  white-space: nowrap;
 }
 .rec-hint { font-size: 14px; color: var(--warning); animation: pulse 1s infinite; }
 .rec-label { font-size: 11px; color: var(--text-muted); margin-left: auto; }
