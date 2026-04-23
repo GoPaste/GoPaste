@@ -660,9 +660,6 @@ function onWindowBlur() {
           <button @click="ctxFav">
             <Star :size="14" /> {{ ctxMenu.item?.favorite ? t('unfavorite') : t('favorite') }}
           </button>
-          <button @click="ctxPin">
-            <Pin :size="14" /> {{ ctxMenu.item?.pinned ? t('unpin') : t('pin') }}
-          </button>
           <button v-if="ctxMenu.item?.type === 'image'" @click="ctxSaveImage">
             <Download :size="14" /> {{ t('saveImage') }}
           </button>
