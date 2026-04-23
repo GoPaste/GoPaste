@@ -13,8 +13,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"gopaste/internal/config"
-	"gopaste/internal/platform"
 	"gopaste/internal/settings"
+	"gopaste/internal/window"
 )
 
 //go:embed all:frontend/dist
@@ -79,7 +79,7 @@ func main() {
 			app,
 		},
 	}
-	platform.ApplyOptions(appOpts)
+	window.ApplyOptions(appOpts)
 	err := wails.Run(appOpts)
 
 	if err != nil {

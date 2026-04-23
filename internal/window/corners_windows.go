@@ -1,6 +1,6 @@
 //go:build windows
 
-package winx
+package window
 
 import (
 	"syscall"

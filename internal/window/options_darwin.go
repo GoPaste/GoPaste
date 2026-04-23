@@ -1,7 +1,7 @@
 //go:build darwin
 
-// Package platform 按操作系统注入 Wails 的平台专属选项。
-package platform
+// Package window 封装窗口相关的跨平台能力。
+package window
 
 import (
 	"github.com/wailsapp/wails/v2/pkg/options"

@@ -27,7 +27,7 @@ import (
 	"gopaste/internal/storage"
 	"gopaste/internal/tray"
 	"gopaste/internal/types"
-	"gopaste/internal/winx"
+	"gopaste/internal/window"
 )
 
 // App 是 Wails 绑定的主结构体。
@@ -439,14 +439,14 @@ func (a *App) setVisible(v bool) {
 }
 
 // applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。
-// Windows 专用；其他平台 winx.FindMainWindow 返回 0，直接退出。
+// Windows 专用；其他平台 window.FindMainWindow 返回 0，直接退出。
 func (a *App) applyTaskbarIconWithRetry() {
 	if runtime.GOOS != "windows" {
 		return
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if hwnd := winx.FindMainWindow("GoPaste"); hwnd != 0 {
+		if hwnd := window.FindMainWindow("GoPaste"); hwnd != 0 {
 			a.applyTaskbarIcon(hwnd)
 			return
 		}
@@ -461,7 +461,7 @@ func (a *App) applyTaskbarIcon(hwnd uintptr) {
 		return
 	}
 	if hwnd == 0 {
-		hwnd = winx.FindMainWindow("GoPaste")
+		hwnd = window.FindMainWindow("GoPaste")
 	}
 	if hwnd == 0 {
 		return
@@ -470,7 +470,7 @@ func (a *App) applyTaskbarIcon(hwnd uintptr) {
 	if a.settings != nil {
 		s = a.settings.Get()
 	}
-	winx.SetTaskbarVisible(hwnd, s.ShowTaskbarIcon)
+	window.SetTaskbarVisible(hwnd, s.ShowTaskbarIcon)
 	bootProbeApp(fmt.Sprintf("taskbar: applied visible=%v", s.ShowTaskbarIcon))
 }
 

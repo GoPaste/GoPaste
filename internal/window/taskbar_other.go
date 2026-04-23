@@ -1,8 +1,6 @@
 //go:build !windows
 
-// Package winx 封装 Windows 特有的 Win32 辅助能力。
-// 非 Windows 平台提供空实现，便于调用方无分支编译。
-package winx
+package window
 
 // FindMainWindow 在非 Windows 平台永远返回 0。
 func FindMainWindow(title string) uintptr { return 0 }

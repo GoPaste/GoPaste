@@ -1,7 +1,6 @@
 //go:build windows
 
-// Package winx 封装 Windows 特有的 Win32 辅助能力（窗口风格、任务栏显隐等）。
-package winx
+package window
 
 import (
 	"syscall"

@@ -1,13 +1,12 @@
 //go:build windows
 
-// Package platform 按操作系统注入 Wails 的平台专属选项。
-package platform
+// Package window 封装窗口相关的跨平台能力：
+// 包括 Wails 启动选项、Win11 DWM 原生圆角、Windows 任务栏显隐等。
+package window
 
 import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
-
-	"gopaste/internal/winx"
 )
 
 // ApplyOptions 将平台相关选项写入 opts。
@@ -20,5 +19,5 @@ func ApplyOptions(opts *options.App) {
 		DisableWindowIcon:    true,
 	}
 	// 在 wails 创建窗口后，通过 DWM API 为 Win11 添加原生圆角
-	winx.ApplyWin11RoundCorners(opts.Title)
+	ApplyWin11RoundCorners(opts.Title)
 }
