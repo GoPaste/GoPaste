@@ -245,15 +245,30 @@ func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
 }
 
 // clampToScreen 约束窗口坐标在屏幕可见工作区内（排除任务栏等系统 UI）。
-// 输入：绝对屏幕坐标 (x, y)。
-// 返回：(absX, absY, workLeft, workTop)
-//   - absX/absY 为夹紧后的绝对屏幕坐标；
-//   - workLeft/workTop 为工作区原点。Wails v2 在 Windows 下 WindowSetPosition 的入参
-//     是「相对工作区」的坐标（Wails 内部会再加上 workArea.Left/Top），因此调用方
-//     需要传入 absX-workLeft, absY-workTop。其他平台 workLeft/workTop 为 0。
-// margin 为四周保留的安全边距，避免阴影/边框被屏幕或任务栏切到。
+//
+// 坐标单位约定（这是本项目反复翻车的地方，务必读清楚）：
+//   - Windows：全部用 **物理像素**。
+//     cursor.Position / cursor.WorkArea 均返回 Win32 原值（物理像素）；
+//     Wails 的 `WindowSetPosition(x, y)` 内部实际是
+//         SetWindowPos(hwnd, HWND_TOP, workRect.Left+x, workRect.Top+y, …)
+//     其中 workRect 来自 GetMonitorInfo 也是物理像素——Wails 并未对入参做
+//     DPI 缩放。所以我们把 (absX-workLeft, absY-workTop) 直接传给它即可；
+//     但 WindowGetSize 内部做了 scaleToDefaultDPI，返回的是**逻辑像素**，
+//     这里需要乘以 DPI 缩放才能和 cursor/工作区同单位参与 clamp。
+//   - macOS/Linux：Wails / Cocoa 都用逻辑像素，scale==1，下面的逻辑保持不变。
+//
+// 返回：(absX, absY, workLeft, workTop)，全部是 Windows 物理像素 /
+// 非 Windows 的逻辑像素。调用方再减去 work 原点得到 WindowSetPosition 入参。
 func (a *App) clampToScreen(x, y int) (int, int, int, int) {
+	// 窗口尺寸：Wails 返回逻辑像素，Windows 下乘以鼠标所在显示器的 DPI scale
+	// 换算成物理像素，才能和 workArea / cursor 同单位比较。
 	w, h := wailsruntime.WindowGetSize(a.ctx)
+	scale := cursor.ScaleForPoint(x, y)
+	if scale <= 0 {
+		scale = 1
+	}
+	w = int(float64(w) * scale)
+	h = int(float64(h) * scale)
 
 	// 优先使用系统工作区（Windows 会排除任务栏）
 	var sx, sy, sw, sh int
@@ -261,7 +276,7 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 	if ww > 0 && wh > 0 {
 		sx, sy, sw, sh = wx, wy, ww, wh
 	} else {
-		// fallback：用 Wails 返回的屏幕总尺寸
+		// fallback：用 Wails 返回的屏幕总尺寸（其它平台）
 		screens, err := wailsruntime.ScreenGetAll(a.ctx)
 		if err != nil || len(screens) == 0 {
 			return x, y, 0, 0
@@ -277,7 +292,8 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 		}
 	}
 
-	const margin = 8
+	// 留出安全边距（物理像素），避免窗口阴影/边框被屏幕或任务栏切到。
+	margin := int(8 * scale)
 	minX := sx + margin
 	minY := sy + margin
 	maxX := sx + sw - w - margin
@@ -303,8 +319,9 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 	return x, y, sx, sy
 }
 
-// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置，自动适配 Wails 在
-// Windows 下 WindowSetPosition 使用「工作区相对坐标」的差异。
+// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置。
+// Windows 下 absX/absY 应为物理像素；其它平台为逻辑像素。
+// 内部会减去工作区原点得到 Wails WindowSetPosition 所需的「相对工作区」坐标。
 func (a *App) setWindowPosAbsolute(absX, absY int) {
 	x, y, workLeft, workTop := a.clampToScreen(absX, absY)
 	wailsruntime.WindowSetPosition(a.ctx, x-workLeft, y-workTop)
