@@ -10,8 +10,7 @@ import {
 } from '../../wailsjs/go/main/App'
 import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
-  Download, Trash2, Info, Database, Shield,
-  MousePointer, RotateCcw, FolderOpen, X, Move,
+  Download, Trash2, Info, Database, X,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
@@ -290,23 +289,25 @@ onMounted(load)
 
       <!-- 剪贴板 -->
       <div v-if="activeTab === 'clipboard'" class="panel">
-        <div class="field">
-          <label><MousePointer :size="14" /> {{ t('pasteBehavior') }}</label>
-          <div class="seg-ctrl">
-            <button :class="{ active: form.pasteTrigger === 'single' }" @click="form.pasteTrigger = 'single'">{{ t('triggerSingle') }}</button>
-            <button :class="{ active: form.pasteTrigger === 'double' }" @click="form.pasteTrigger = 'double'">{{ t('triggerDouble') }}</button>
-          </div>
-          <p class="desc">{{ t('pasteTriggerDesc') }}</p>
-        </div>
-        <div class="field">
-          <label><Move :size="14" /> {{ t('windowPosition') }}</label>
-          <div class="seg-ctrl">
-            <button :class="{ active: form.windowPosition === 'follow' }" @click="form.windowPosition = 'follow'">{{ t('wpFollow') }}</button>
-            <button :class="{ active: form.windowPosition === 'remember' }" @click="form.windowPosition = 'remember'">{{ t('wpRemember') }}</button>
-            <button :class="{ active: form.windowPosition === 'center' }" @click="form.windowPosition = 'center'">{{ t('wpCenter') }}</button>
-          </div>
-        </div>
+        <div class="section-title">{{ t('pasteBehavior') }}</div>
         <div class="section-card">
+          <div class="card-row">
+            <span>{{ t('pasteBehavior') }}</span>
+            <div class="seg-ctrl compact">
+              <button :class="{ active: form.pasteTrigger === 'single' }" @click="form.pasteTrigger = 'single'">{{ t('triggerSingle') }}</button>
+              <button :class="{ active: form.pasteTrigger === 'double' }" @click="form.pasteTrigger = 'double'">{{ t('triggerDouble') }}</button>
+            </div>
+          </div>
+          <div class="card-row">
+            <div>
+              <span>{{ t('windowPosition') }}</span>
+            </div>
+            <div class="seg-ctrl compact">
+              <button :class="{ active: form.windowPosition === 'follow' }" @click="form.windowPosition = 'follow'">{{ t('wpFollow') }}</button>
+              <button :class="{ active: form.windowPosition === 'remember' }" @click="form.windowPosition = 'remember'">{{ t('wpRemember') }}</button>
+              <button :class="{ active: form.windowPosition === 'center' }" @click="form.windowPosition = 'center'">{{ t('wpCenter') }}</button>
+            </div>
+          </div>
           <div class="card-row">
             <div>
               <span>{{ t('scrollTopOnShow') }}</span>
@@ -325,16 +326,21 @@ onMounted(load)
 
       <!-- 快捷键 -->
       <div v-if="activeTab === 'shortcut'" class="panel">
-        <div class="field">
-          <label><Keyboard :size="14" /> {{ t('togglePanel') }}</label>
-          <div class="hotkey-recorder" :class="{ recording }"
-            tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
-            <Keyboard :size="16" />
-            <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
-            <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
-            <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
+        <div class="section-title">{{ t('shortcutTitle') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <div>
+              <span>{{ t('togglePanel') }}</span>
+              <p class="desc-inline">{{ t('shortcutDesc') }}</p>
+            </div>
+            <div class="hotkey-recorder" :class="{ recording }"
+              tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
+              <Keyboard :size="16" />
+              <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
+              <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
+              <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
+            </div>
           </div>
-          <p class="desc" style="white-space:pre-line">{{ t('shortcutDesc') }}</p>
         </div>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
@@ -342,55 +348,73 @@ onMounted(load)
 
       <!-- 数据管理 -->
       <div v-if="activeTab === 'backup'" class="panel">
-        <div class="field">
-          <label><Shield :size="14" /> {{ t('dataSecurity') }}</label>
-          <p class="desc">{{ t('dataSecurityDesc') }}</p>
-        </div>
-        <div class="field">
-          <label><FolderOpen :size="14" /> {{ t('dataDir') }}</label>
-          <code class="path">{{ dataDir }}</code>
-        </div>
-        <div class="field">
-          <label>{{ t('maxItems') }}</label>
-          <div class="input-group">
-            <input
-              type="number" min="0" v-model="form.maxItems"
-              @blur="onNumberBlur('maxItems')"
-              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
-            />
-            <span class="unit">{{ t('maxItemsUnit') }}</span>
+        <div class="section-title">{{ t('dataSecurity') }}</div>
+        <div class="section-card">
+          <div class="card-row stack">
+            <p class="desc-inline">{{ t('dataSecurityDesc') }}</p>
           </div>
-        </div>
-        <div class="field">
-          <label>{{ t('maxDays') }}</label>
-          <div class="input-group">
-            <input
-              type="number" min="0" v-model="form.maxDays"
-              @blur="onNumberBlur('maxDays')"
-              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
-            />
-            <span class="unit">{{ t('maxDaysUnit') }}</span>
+          <div class="card-row">
+            <span>{{ t('dataDir') }}</span>
+            <code class="path">{{ dataDir }}</code>
           </div>
         </div>
 
-        <div class="field">
-          <label><Download :size="14" /> {{ t('exportData') }}</label>
-          <p class="desc">{{ t('exportDesc') }}</p>
-          <button class="btn-outline" @click="doExport">
-            <Download :size="14" />
-            {{ t('exportJson') }}
-          </button>
+        <div class="section-title">{{ t('secStorageLimit') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <span>{{ t('maxItems') }}</span>
+            <div class="input-group">
+              <input
+                type="number" min="0" v-model="form.maxItems"
+                @blur="onNumberBlur('maxItems')"
+                @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+              />
+              <span class="unit">{{ t('maxItemsUnit') }}</span>
+            </div>
+          </div>
+          <div class="card-row">
+            <span>{{ t('maxDays') }}</span>
+            <div class="input-group">
+              <input
+                type="number" min="0" v-model="form.maxDays"
+                @blur="onNumberBlur('maxDays')"
+                @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+              />
+              <span class="unit">{{ t('maxDaysUnit') }}</span>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label><RotateCcw :size="14" /> {{ t('importData') }}</label>
-          <p class="desc">{{ t('importDesc') }}</p>
+
+        <div class="section-title">{{ t('exportData') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <div>
+              <span>{{ t('exportData') }}</span>
+              <p class="desc-inline">{{ t('exportDesc') }}</p>
+            </div>
+            <button class="btn-outline" @click="doExport">
+              <Download :size="14" />
+              {{ t('exportJson') }}
+            </button>
+          </div>
+          <div class="card-row disabled">
+            <div>
+              <span>{{ t('importData') }}</span>
+              <p class="desc-inline">{{ t('importDesc') }}</p>
+            </div>
+            <span class="badge">{{ t('comingSoon') }}</span>
+          </div>
         </div>
-        <div class="field">
-          <label>{{ t('cleanData') }}</label>
-          <button class="btn-danger" @click="doClear">
-            <Trash2 :size="14" />
-            {{ t('clearUnfav') }}
-          </button>
+
+        <div class="section-title">{{ t('cleanData') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <span>{{ t('clearUnfav') }}</span>
+            <button class="btn-danger" @click="doClear">
+              <Trash2 :size="14" />
+              {{ t('clearUnfav') }}
+            </button>
+          </div>
         </div>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
@@ -586,6 +610,7 @@ onMounted(load)
 .seg-ctrl button.active { background: var(--accent); color: #fff; }
 .seg-ctrl button:hover:not(.active) { background: var(--bg-hover); }
 .seg-sm button { padding: 4px 10px; font-size: 12px; }
+.seg-ctrl.compact button { padding: 4px 10px; font-size: 12px; }
 
 /* 区块标题 */
 .section-title {
@@ -607,7 +632,13 @@ onMounted(load)
 }
 .card-row:last-child { border-bottom: none; }
 .card-row.disabled { opacity: .45; pointer-events: none; }
-.card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; }
+.card-row.stack { display: block; }
+.card-row.stack .desc-inline { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.card-row .path {
+  max-width: 60%; text-align: right; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }
 
 /* Badge */
