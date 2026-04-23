@@ -17,6 +17,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"gopaste/internal/appguard"
 	"gopaste/internal/clipboard"
 	"gopaste/internal/config"
 	"gopaste/internal/crypto"
@@ -27,6 +28,8 @@ import (
 	"gopaste/internal/storage"
 	"gopaste/internal/tray"
 	"gopaste/internal/types"
+	"gopaste/internal/updater"
+	"gopaste/internal/window"
 )
 
 // App 是 Wails 绑定的主结构体。
@@ -39,6 +42,7 @@ type App struct {
 	fileWatch *clipboard.FileWatcher
 	hotkey   *hotkey.Manager
 	trayEnd  func()
+	trayQuit bool // 本进程内是否已调用过 systray.Quit()；一旦为 true，托盘无法在本进程再启用
 	settings *settings.Store
 
 	// 窗口可见状态
@@ -127,6 +131,14 @@ func (a *App) startup(ctx context.Context) {
 		s = ss.Get()
 	}
 
+	// 若用户配置了开机自启，启动时重新写一遍 OS 自启配置，
+	// 保证 Exec 路径始终指向当前 exe（应对用户移动/升级程序后路径变化）。
+	if s.AutoStart {
+		if err := appguard.SetAutoStart(true); err != nil {
+			a.log.Warn("reapply autostart", "err", err)
+		}
+	}
+
 	// 静默启动：窗口初始隐藏
 	if s.SilentStart {
 		a.setVisible(false)
@@ -167,6 +179,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// 7) 启动时按策略 prune
 	go a.runPrune()
+
+	// 8) Windows 任务栏图标显隐（需要 HWND 就绪后再应用；轮询 3 秒内生效）
+	go a.applyTaskbarIconWithRetry()
 
 	a.log.Info("GoPaste started", "data", paths.Root)
 }
@@ -256,15 +271,30 @@ func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
 }
 
 // clampToScreen 约束窗口坐标在屏幕可见工作区内（排除任务栏等系统 UI）。
-// 输入：绝对屏幕坐标 (x, y)。
-// 返回：(absX, absY, workLeft, workTop)
-//   - absX/absY 为夹紧后的绝对屏幕坐标；
-//   - workLeft/workTop 为工作区原点。Wails v2 在 Windows 下 WindowSetPosition 的入参
-//     是「相对工作区」的坐标（Wails 内部会再加上 workArea.Left/Top），因此调用方
-//     需要传入 absX-workLeft, absY-workTop。其他平台 workLeft/workTop 为 0。
-// margin 为四周保留的安全边距，避免阴影/边框被屏幕或任务栏切到。
+//
+// 坐标单位约定（这是本项目反复翻车的地方，务必读清楚）：
+//   - Windows：全部用 **物理像素**。
+//     cursor.Position / cursor.WorkArea 均返回 Win32 原值（物理像素）；
+//     Wails 的 `WindowSetPosition(x, y)` 内部实际是
+//         SetWindowPos(hwnd, HWND_TOP, workRect.Left+x, workRect.Top+y, …)
+//     其中 workRect 来自 GetMonitorInfo 也是物理像素——Wails 并未对入参做
+//     DPI 缩放。所以我们把 (absX-workLeft, absY-workTop) 直接传给它即可；
+//     但 WindowGetSize 内部做了 scaleToDefaultDPI，返回的是**逻辑像素**，
+//     这里需要乘以 DPI 缩放才能和 cursor/工作区同单位参与 clamp。
+//   - macOS/Linux：Wails / Cocoa 都用逻辑像素，scale==1，下面的逻辑保持不变。
+//
+// 返回：(absX, absY, workLeft, workTop)，全部是 Windows 物理像素 /
+// 非 Windows 的逻辑像素。调用方再减去 work 原点得到 WindowSetPosition 入参。
 func (a *App) clampToScreen(x, y int) (int, int, int, int) {
+	// 窗口尺寸：Wails 返回逻辑像素，Windows 下乘以鼠标所在显示器的 DPI scale
+	// 换算成物理像素，才能和 workArea / cursor 同单位比较。
 	w, h := wailsruntime.WindowGetSize(a.ctx)
+	scale := cursor.ScaleForPoint(x, y)
+	if scale <= 0 {
+		scale = 1
+	}
+	w = int(float64(w) * scale)
+	h = int(float64(h) * scale)
 
 	// 优先使用系统工作区（Windows 会排除任务栏）
 	var sx, sy, sw, sh int
@@ -272,7 +302,7 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 	if ww > 0 && wh > 0 {
 		sx, sy, sw, sh = wx, wy, ww, wh
 	} else {
-		// fallback：用 Wails 返回的屏幕总尺寸
+		// fallback：用 Wails 返回的屏幕总尺寸（其它平台）
 		screens, err := wailsruntime.ScreenGetAll(a.ctx)
 		if err != nil || len(screens) == 0 {
 			return x, y, 0, 0
@@ -288,7 +318,8 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 		}
 	}
 
-	const margin = 8
+	// 留出安全边距（物理像素），避免窗口阴影/边框被屏幕或任务栏切到。
+	margin := int(8 * scale)
 	minX := sx + margin
 	minY := sy + margin
 	maxX := sx + sw - w - margin
@@ -314,8 +345,9 @@ func (a *App) clampToScreen(x, y int) (int, int, int, int) {
 	return x, y, sx, sy
 }
 
-// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置，自动适配 Wails 在
-// Windows 下 WindowSetPosition 使用「工作区相对坐标」的差异。
+// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置。
+// Windows 下 absX/absY 应为物理像素；其它平台为逻辑像素。
+// 内部会减去工作区原点得到 Wails WindowSetPosition 所需的「相对工作区」坐标。
 func (a *App) setWindowPosAbsolute(absX, absY int) {
 	x, y, workLeft, workTop := a.clampToScreen(absX, absY)
 	wailsruntime.WindowSetPosition(a.ctx, x-workLeft, y-workTop)
@@ -438,6 +470,42 @@ func (a *App) isVisible() bool {
 	return a.windowVisible
 }
 
+// applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。
+// Windows 专用；其他平台 window.FindMainWindow 返回 0，直接退出。
+func (a *App) applyTaskbarIconWithRetry() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if hwnd := window.FindMainWindow("GoPaste"); hwnd != 0 {
+			a.applyTaskbarIcon(hwnd)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	a.log.Warn("applyTaskbarIcon: HWND not found within 5s")
+}
+
+// applyTaskbarIcon 按当前设置把主窗口从任务栏显/隐。
+func (a *App) applyTaskbarIcon(hwnd uintptr) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if hwnd == 0 {
+		hwnd = window.FindMainWindow("GoPaste")
+	}
+	if hwnd == 0 {
+		return
+	}
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+	window.SetTaskbarVisible(hwnd, s.ShowTaskbarIcon)
+	bootProbeApp(fmt.Sprintf("taskbar: applied visible=%v", s.ShowTaskbarIcon))
+}
+
 // initFileLogger 把日志写到 <root>/gopaste.log。
 // Windows GUI 子系统下 os.Stdout 不可用，因此只写文件；如果文件无法打开，则把
 // 错误信息回写到一个保底文本，方便定位"日志为何空的"问题。
@@ -462,9 +530,15 @@ func (a *App) initFileLogger(root string) {
 }
 
 // startTray 启动系统托盘。
+// 注意：fyne/systray 内部用 sync.Once 保护 Quit，一个进程只能关一次；
+// 关闭之后再调用 Start 不会真正弹出图标，此时 a.trayQuit=true，需要重启进程。
 func (a *App) startTray() {
 	if a.trayEnd != nil {
 		return // 已启动
+	}
+	if a.trayQuit {
+		a.log.Warn("tray: cannot re-enable after quit; restart required")
+		return
 	}
 	a.trayEnd = tray.Start(tray.Callbacks{
 		OnShow:    a.togglePanel,
@@ -479,6 +553,7 @@ func (a *App) stopTray() {
 	if a.trayEnd != nil {
 		a.trayEnd()
 		a.trayEnd = nil
+		a.trayQuit = true
 	}
 }
 
@@ -670,13 +745,45 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	if a.settings == nil {
 		return fmt.Errorf("settings not ready")
 	}
+	prev := a.settings.Get()
 	if err := a.settings.Set(ns); err != nil {
 		return err
 	}
 	a.registerHotkey()
 	go a.runPrune()
 
+	// Windows 任务栏图标实时生效
+	a.applyTaskbarIcon(0)
+
+	// 托盘图标实时生效：
+	//   - 从"显示"切到"隐藏"：直接调用 systray.Quit() 关闭，图标立刻消失。
+	//   - 从"隐藏"切到"显示"：本进程内首次启动（a.trayEnd == nil）可以 Start；
+	//     如果之前关过一次（systray 内部 quitOnce 已消耗），Start 会被一次性门
+	//     挡住——这种场景才需要重启，由前端看到 trayStopped=true 时自行提示。
+	if prev.ShowTrayIcon != ns.ShowTrayIcon {
+		if ns.ShowTrayIcon {
+			a.startTray() // 首次启用或进程内尚未关闭时生效
+		} else {
+			a.stopTray()
+		}
+	}
+
+	// 开机自启实时同步：仅在状态变化时写 OS 自启配置，避免重复 I/O。
+	if prev.AutoStart != ns.AutoStart {
+		if err := appguard.SetAutoStart(ns.AutoStart); err != nil {
+			a.log.Error("set autostart", "enabled", ns.AutoStart, "err", err)
+			// 不中断 UpdateSettings，只记录日志
+		}
+	}
+
 	return nil
+}
+
+// TrayNeedsRestart 返回是否需要重启才能重新显示托盘图标。
+// 仅当本进程内已关过一次托盘（systray 内部 quitOnce 已消耗）时为 true；
+// 前端在 showTrayIcon 从 false 切到 true 时据此决定是否提示"重启生效"。
+func (a *App) TrayNeedsRestart() bool {
+	return a.trayQuit
 }
 
 // ExportData 导出所有历史为 JSON 字符串（不含图片二进制；仅元数据）。
@@ -809,6 +916,45 @@ func (a *App) RevealInExplorer(path string) error {
 		cmd = exec.Command("xdg-open", dir)
 	}
 	return cmd.Start()
+}
+
+// OpenURL 使用系统默认浏览器打开 URL。
+// 直接调用 Wails runtime 的 BrowserOpenURL，屏蔽平台差异。
+func (a *App) OpenURL(url string) error {
+	if a.ctx == nil {
+		return fmt.Errorf("not ready")
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return fmt.Errorf("empty url")
+	}
+	// 如果缺少协议头，默认补 https://
+	if !strings.Contains(url, "://") {
+		url = "https://" + url
+	}
+	wailsruntime.BrowserOpenURL(a.ctx, url)
+	return nil
+}
+
+// GetAppVersion 返回当前应用版本（semver 字符串，形如 "0.1.0"）。
+func (a *App) GetAppVersion() string {
+	return updater.Version
+}
+
+// CheckForUpdate 检查 GitHub Releases 是否有更新。
+// 返回结构体中 HasUpdate 为 true 时，前端可展示"新版本可用"提示，
+// 并引导用户点击 ReleaseURL 跳转下载。检测失败（无网络等）返回空结果而非错误，
+// 避免弹错误弹窗；真实错误记录到日志。
+func (a *App) CheckForUpdate() updater.Result {
+	if a.ctx == nil {
+		return updater.Result{CurrentVersion: updater.Version}
+	}
+	res, err := updater.Check(a.ctx, updater.Version)
+	if err != nil {
+		a.log.Warn("check for update", "err", err)
+		return updater.Result{CurrentVersion: updater.Version}
+	}
+	return res
 }
 
 // SaveImageToFile 将图片内容保存到用户选择的位置（通过系统保存对话框）。

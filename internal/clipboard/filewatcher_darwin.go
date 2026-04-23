@@ -3,7 +3,7 @@
 package clipboard
 
 /*
-#cgo CFLAGS: -x objective-c
+#cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework Cocoa
 #import <Cocoa/Cocoa.h>
 #include <stdlib.h>
@@ -35,9 +35,23 @@ static dispatch_queue_t pasteboardQueue(void) {
     return q;
 }
 
+// hasFileURLs 仅检查当前剪切板是否存在文件 URL，不分配任何返回内存。
+// 多次调用相当频繁（500ms 轮询 + text 事件探测），必须极度轻量。
+int hasFileURLs() {
+    @autoreleasepool {
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        NSArray *classes = @[[NSURL class]];
+        NSDictionary *options = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES};
+        return [pb canReadObjectForClasses:classes options:options] ? 1 : 0;
+    }
+}
+
 // getFileURLs 返回剪切板中的文件路径（换行分隔），无文件返回 NULL。
 // 调用方负责调用 free() 释放返回的非 NULL 指针。
 // 访问 NSPasteboard 在专用串行队列上执行，避免跨线程并发触发 AppKit 异常。
+// block 内部的 @autoreleasepool 负责释放 Cocoa 自动释放对象（Go goroutine
+// 默认没有系统 main loop 提供的 autorelease pool，若缺失会出现长时间运行后
+// 内存/引用计数错乱导致的崩溃）。
 const char* getFileURLs(void) {
     __block char *result = NULL;
     dispatch_sync(pasteboardQueue(), ^{
@@ -56,7 +70,10 @@ const char* getFileURLs(void) {
             NSMutableArray *paths = [NSMutableArray arrayWithCapacity:urls.count];
             for (NSURL *url in urls) {
                 if (url.isFileURL) {
-                    [paths addObject:url.path];
+                    NSString *p = url.path;
+                    if (p.length > 0) {
+                        [paths addObject:p];
+                    }
                 }
             }
             if (paths.count == 0) {
@@ -65,6 +82,8 @@ const char* getFileURLs(void) {
             NSString *joined = [paths componentsJoinedByString:@"\n"];
             const char *utf8 = [joined UTF8String];
             if (utf8 != NULL) {
+                // strdup 出的字节由 Go 侧 C.free 释放；autorelease pool 销毁时
+                // joined/paths 会被释放，但字节已复制，不会悬垂。
                 result = strdup(utf8);
             }
         }
@@ -117,7 +136,7 @@ var lastChangeCount int64 = -1
 // 这样 pasteboardHasFile 在高频调用（每次文本到达）时不必反复进 CGo/dispatch_sync。
 var hasFileCache atomic.Int64
 
-// encodeCache / decodeCache 简易编码：changeCount * 4 + (0 未知 | 1 false | 2 true)。
+// encodeHasFile 简易编码：changeCount * 4 + (0 未知 | 1 false | 2 true)。
 func encodeHasFile(cc int64, has bool) int64 {
 	v := cc << 2
 	if has {
@@ -126,6 +145,16 @@ func encodeHasFile(cc int64, has bool) int64 {
 		v |= 1
 	}
 	return v
+}
+
+// hasFilesOnClipboard 返回当前剪切板是否含有文件 URL。
+// Mac 在 Finder 里复制文件/文件夹时，NSPasteboard 会同时写入文件 URL 与文件名文本，
+// text watcher 读到的是文件名 —— 这会导致「文件 + 文本」双重入库。
+// 上层 Watcher 会用本函数过滤掉「明明剪切板里是文件，却以文本形式上报」的情况。
+// 走轻量 hasFileURLs() 路径（不过 dispatch_sync），够用；
+// 对于文本路径的快速过滤，请使用 pasteboardHasFile（带缓存）。
+func hasFilesOnClipboard() bool {
+	return C.hasFileURLs() != 0
 }
 
 // pollFiles 读取 macOS 剪切板中的文件 URL 列表。

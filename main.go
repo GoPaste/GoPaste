@@ -11,10 +11,11 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/windows"
 
+	"gopaste/internal/appguard"
 	"gopaste/internal/config"
 	"gopaste/internal/settings"
+	"gopaste/internal/window"
 )
 
 //go:embed all:frontend/dist
@@ -43,6 +44,15 @@ func bootProbe(stage string) {
 func main() {
 	bootProbe("main: enter")
 	defer bootProbe("main: exit")
+
+	// 单实例保护：已有实例在运行时直接退出。
+	// 后续可扩展：通过 IPC 把启动参数转发给已运行实例并请求它激活窗口。
+	if !appguard.AcquireSingleInstance() {
+		bootProbe("main: another instance running, exit")
+		return
+	}
+	defer appguard.Release()
+
 	app := NewApp()
 
 	// 预加载设置以支持静默启动
@@ -60,14 +70,13 @@ func main() {
 	}
 
 	bootProbe(fmt.Sprintf("main: before wails.Run startHidden=%v", startHidden))
-	err := wails.Run(&options.App{
+	appOpts := &options.App{
 		Title:             "GoPaste",
 		Width:             480,
 		Height:            680,
 		MinWidth:          480,
 		MinHeight:         600,
 		DisableResize:     false,
-		Frameless:         true,
 		StartHidden:       startHidden,
 		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
@@ -81,12 +90,9 @@ func main() {
 		Bind: []interface{}{
 			app,
 		},
-		Windows: &windows.Options{
-			WebviewIsTransparent: false,
-			WindowIsTranslucent:  false,
-			DisableWindowIcon:    true,
-		},
-	})
+	}
+	window.ApplyOptions(appOpts)
+	err := wails.Run(appOpts)
 
 	if err != nil {
 		bootProbe("main: wails.Run returned err=" + err.Error())

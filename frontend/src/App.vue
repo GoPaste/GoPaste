@@ -16,6 +16,7 @@ import {
   SaveImageToFile,
   GetFileThumbnail,
   SetNote,
+  OpenURL,
 } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff, WindowSetAlwaysOnTop } from '../wailsjs/runtime/runtime'
 import type { types } from '../wailsjs/go/models'
@@ -40,6 +41,7 @@ import {
   FolderOpen,
   Download,
   Edit3,
+  ExternalLink,
   X,
 } from 'lucide-vue-next'
 
@@ -293,6 +295,25 @@ async function doDelete(it: Item) {
 async function doTogglePin(it: Item) { await TogglePin(it.id, !it.pinned); await refresh() }
 async function doToggleFav(it: Item) { await ToggleFavorite(it.id, !it.favorite); await refresh() }
 
+// 按内容类型的专属操作：链接 → 浏览器打开；文件 → 资源管理器；图片 → 保存
+async function doOpenUrl(it: Item) {
+  try {
+    const b64 = await GetContent(it.id)
+    const url = b64ToUtf8(b64).trim()
+    if (url) await OpenURL(url)
+  } catch (e) { console.error(e) }
+}
+async function doRevealFile(it: Item) {
+  try {
+    const b64 = await GetContent(it.id)
+    const paths = b64ToUtf8(b64).split('\n')
+    if (paths[0]) await RevealInExplorer(paths[0])
+  } catch (e) { console.error(e) }
+}
+async function doSaveImage(it: Item) {
+  try { await SaveImageToFile(it.id) } catch (e) { console.error(e) }
+}
+
 // 备注弹窗
 const noteVisible = ref(false)
 const noteText = ref('')
@@ -342,21 +363,9 @@ async function ctxPin() { if (ctxMenu.value.item) await doTogglePin(ctxMenu.valu
 async function ctxDelete() { if (ctxMenu.value.item) await doDelete(ctxMenu.value.item); closeCtxMenu() }
 async function ctxDetail() { if (ctxMenu.value.item) await showDetail(ctxMenu.value.item); closeCtxMenu() }
 function ctxNote() { if (ctxMenu.value.item) showNoteDialog(ctxMenu.value.item); closeCtxMenu() }
-async function ctxReveal() {
-  if (!ctxMenu.value.item) return
-  // 获取文件路径（content 是换行分隔的路径）
-  try {
-    const b64 = await GetContent(ctxMenu.value.item.id)
-    const paths = b64ToUtf8(b64).split('\n')
-    if (paths[0]) await RevealInExplorer(paths[0])
-  } catch (e) { console.error(e) }
-  closeCtxMenu()
-}
-async function ctxSaveImage() {
-  if (!ctxMenu.value.item) return
-  try { await SaveImageToFile(ctxMenu.value.item.id) } catch (e) { console.error(e) }
-  closeCtxMenu()
-}
+async function ctxReveal() { if (ctxMenu.value.item) await doRevealFile(ctxMenu.value.item); closeCtxMenu() }
+async function ctxSaveImage() { if (ctxMenu.value.item) await doSaveImage(ctxMenu.value.item); closeCtxMenu() }
+async function ctxOpenInBrowser() { if (ctxMenu.value.item) await doOpenUrl(ctxMenu.value.item); closeCtxMenu() }
 
 // 主题
 const theme = ref<'dark' | 'light'>('dark')
@@ -444,6 +453,9 @@ function onKeyDown(e: KeyboardEvent) {
 let unsubscribe: (() => void) | null = null
 
 onMounted(async () => {
+  // 平台标识：Mac 下给红黄绿按钮预留空间
+  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test((navigator as any).platform || '')
+  document.documentElement.setAttribute('data-os', isMac ? 'mac' : 'other')
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('blur', onWindowBlur)
   window.addEventListener('focus', onWindowFocus)
@@ -568,6 +580,15 @@ function onWindowBlur() {
               </span>
             </span>
             <div class="item-actions" @click.stop>
+              <button v-if="it.type === 'link'" :title="t('openInBrowser')" @click="doOpenUrl(it)">
+                <ExternalLink :size="14" />
+              </button>
+              <button v-if="it.type === 'file'" :title="t('revealInExplorer')" @click="doRevealFile(it)">
+                <FolderOpen :size="14" />
+              </button>
+              <button v-if="it.type === 'image'" :title="t('saveImage')" @click="doSaveImage(it)">
+                <Download :size="14" />
+              </button>
               <button :title="t('copy')" @click="doCopy(it)"><Copy :size="14" /></button>
               <button :title="t('favorite')" :class="{ active: it.favorite }" @click="doToggleFav(it)">
                 <Star :size="14" :fill="it.favorite ? 'currentColor' : 'none'" />
@@ -660,14 +681,14 @@ function onWindowBlur() {
           <button @click="ctxFav">
             <Star :size="14" /> {{ ctxMenu.item?.favorite ? t('unfavorite') : t('favorite') }}
           </button>
-          <button @click="ctxPin">
-            <Pin :size="14" /> {{ ctxMenu.item?.pinned ? t('unpin') : t('pin') }}
-          </button>
           <button v-if="ctxMenu.item?.type === 'image'" @click="ctxSaveImage">
             <Download :size="14" /> {{ t('saveImage') }}
           </button>
           <button v-if="ctxMenu.item?.type === 'file'" @click="ctxReveal">
             <FolderOpen :size="14" /> {{ t('revealInExplorer') }}
+          </button>
+          <button v-if="ctxMenu.item?.type === 'link'" @click="ctxOpenInBrowser">
+            <ExternalLink :size="14" /> {{ t('openInBrowser') }}
           </button>
           <div class="ctx-sep"></div>
           <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> {{ t('delete') }}</button>
@@ -735,9 +756,12 @@ html, body, #app {
   margin: 0; padding: 0;
   height: 100vh; width: 100vw;
   font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg); color: var(--text); overflow: hidden;
+  background: transparent; color: var(--text); overflow: hidden;
 }
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app {
+  display: flex; flex-direction: column; height: 100vh;
+  background: var(--bg); overflow: hidden;
+}
 
 /* 可拖拽区域：本容器可拖；内部所有输入/按钮自动排除 */
 .drag-region {
@@ -754,6 +778,7 @@ html, body, #app {
 }
 
 .topbar { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); align-items: center; }
+[data-os="mac"] .topbar { padding-left: 80px; }
 .search { flex: 1; display: flex; align-items: center; gap: 6px; background: var(--bg-elevated); border-radius: 8px; padding: 6px 10px; }
 .search input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-size: 14px; }
 .search-icon { color: var(--text-muted); flex-shrink: 0; }
