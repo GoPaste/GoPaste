@@ -732,9 +732,13 @@ html, body, #app {
   margin: 0; padding: 0;
   height: 100vh; width: 100vw;
   font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg); color: var(--text); overflow: hidden;
+  background: transparent; color: var(--text); overflow: hidden;
 }
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app {
+  display: flex; flex-direction: column; height: 100vh;
+  background: var(--bg); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.18);
+}
 
 /* 可拖拽区域：本容器可拖；内部所有输入/按钮自动排除 */
 .drag-region {
