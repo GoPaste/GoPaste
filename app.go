@@ -27,6 +27,7 @@ import (
 	"gopaste/internal/storage"
 	"gopaste/internal/tray"
 	"gopaste/internal/types"
+	"gopaste/internal/winx"
 )
 
 // App 是 Wails 绑定的主结构体。
@@ -151,6 +152,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// 7) 启动时按策略 prune
 	go a.runPrune()
+
+	// 8) Windows 任务栏图标显隐（需要 HWND 就绪后再应用；轮询 3 秒内生效）
+	go a.applyTaskbarIconWithRetry()
 
 	a.log.Info("GoPaste started", "data", paths.Root)
 }
@@ -416,6 +420,42 @@ func (a *App) setVisible(v bool) {
 	a.visMu.Unlock()
 }
 
+// applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。
+// Windows 专用；其他平台 winx.FindMainWindow 返回 0，直接退出。
+func (a *App) applyTaskbarIconWithRetry() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if hwnd := winx.FindMainWindow("GoPaste"); hwnd != 0 {
+			a.applyTaskbarIcon(hwnd)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	a.log.Warn("applyTaskbarIcon: HWND not found within 5s")
+}
+
+// applyTaskbarIcon 按当前设置把主窗口从任务栏显/隐。
+func (a *App) applyTaskbarIcon(hwnd uintptr) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if hwnd == 0 {
+		hwnd = winx.FindMainWindow("GoPaste")
+	}
+	if hwnd == 0 {
+		return
+	}
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+	winx.SetTaskbarVisible(hwnd, s.ShowTaskbarIcon)
+	bootProbeApp(fmt.Sprintf("taskbar: applied visible=%v", s.ShowTaskbarIcon))
+}
+
 // initFileLogger 把日志写到 <root>/gopaste.log。
 // Windows GUI 子系统下 os.Stdout 不可用，因此只写文件；如果文件无法打开，则把
 // 错误信息回写到一个保底文本，方便定位"日志为何空的"问题。
@@ -622,6 +662,9 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	}
 	a.registerHotkey()
 	go a.runPrune()
+
+	// Windows 任务栏图标实时生效，无需重启
+	a.applyTaskbarIcon(0)
 
 	return nil
 }

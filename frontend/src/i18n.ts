@@ -131,7 +131,7 @@ const en: Record<string, string> = {
   'timeSecAgo': '{n}s ago', 'timeMinAgo': '{n}m ago', 'timeHourAgo': '{n}h ago',
   'settings': 'Settings', 'closeSettings': 'Close Settings',
   'navGeneral': 'General', 'navClipboard': 'Clipboard', 'navShortcut': 'Shortcut',
-  'navHistory': 'History', 'navBackup': 'Data Management', 'navAbout': 'About',
+  'navHistory': 'History', 'navBackup': 'Backup', 'navAbout': 'About',
   'generalTitle': 'General', 'theme': 'Theme', 'dark': 'Dark', 'light': 'Light',
   'language': 'Language',
   'pasteBehavior': 'Auto Paste',

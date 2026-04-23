@@ -247,7 +247,6 @@ onMounted(load)
           <div class="card-row">
             <div>
               <span>{{ t('showTaskbarIcon') }}</span>
-              <p class="desc-inline">{{ t('restartRequired') }}</p>
             </div>
             <label class="toggle"><input type="checkbox" v-model="form.showTaskbarIcon" /><span class="slider"></span></label>
           </div>
