@@ -363,7 +363,7 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="section-title">{{ t('secStorageLimit') }}</div>
+        <div class="section-title">{{ t('storageSettings') }}</div>
         <div class="section-card">
           <div class="card-row">
             <span>{{ t('maxItems') }}</span>
@@ -389,7 +389,7 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="section-title">{{ t('exportData') }}</div>
+        <div class="section-title">{{ t('importExport') }}</div>
         <div class="section-card">
           <div class="card-row">
             <div>
@@ -640,7 +640,8 @@ onMounted(load)
 .card-row.stack .desc-inline { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
 .card-row > div:not([class]) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-row .path {
-  max-width: 60%; text-align: right; word-break: break-all;
+  max-width: 70%; text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }
