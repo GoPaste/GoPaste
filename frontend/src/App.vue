@@ -736,7 +736,7 @@ html, body, #app {
 }
 .app {
   display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); border-radius: 12px; overflow: hidden;
+  background: var(--bg); border-radius: 20px; overflow: hidden;
   box-shadow: 0 2px 16px rgba(0,0,0,0.18);
 }
 
