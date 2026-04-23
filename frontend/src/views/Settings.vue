@@ -538,6 +538,7 @@ onMounted(load)
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; border: 1px solid var(--border); color: var(--text);
   padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  white-space: nowrap; flex-shrink: 0;
 }
 .btn-outline:hover { background: var(--bg-elevated); }
 
