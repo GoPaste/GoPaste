@@ -338,11 +338,11 @@ onMounted(load)
               <p class="desc-inline">{{ t('shortcutDesc') }}</p>
             </div>
             <div class="hotkey-recorder" :class="{ recording }"
-              tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)">
+              tabindex="0" @click="startRecording" @keydown="recording && onRecordKey($event)"
+              @blur="recording = false">
               <Keyboard :size="16" />
               <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
               <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
-              <span v-if="!recording" class="rec-label">{{ t('clickToModify') }}</span>
             </div>
           </div>
         </div>
