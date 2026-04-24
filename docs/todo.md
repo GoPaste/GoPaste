@@ -35,10 +35,14 @@
 
 ### 跨平台功能补齐
 
-- [ ] **Windows 粘贴改用 Shift+Insert（可选）**
-  参考 EcoPaste 做法，终端（cmd / Git Bash / WSL）里 `Ctrl+V` 粘不进去但 `Shift+Insert` 可以。实现方式：
-  - 默认保持 Ctrl+V（多数 GUI 应用的习惯）
-  - 设置里加开关"Windows 下使用 Shift+Insert 粘贴"
+- [x] **Windows 粘贴快捷键改为 Shift+Insert** ✅ 已完成（2026-04-24）
+  - 原因：Shift+Insert 是 Windows 自 DOS 起的通用粘贴键，兼容 cmd / PowerShell / Git Bash / WSL / RDP / VMware Console 等 Ctrl+V 不生效的场景。EcoPaste 同款方案。
+  - 上次撤销的根因定位：Insert 是"扩展键"（和小键盘 Numpad0 共享 VK_INSERT=0x2D）。之前只改 VK 没设 `KEYEVENTF_EXTENDEDKEY`、也没填 `wScan`——NumLock 开时被当成 Numpad0 输入 "0"，NumLock 关时被多数应用忽略，Chromium/RDP 干脆不识别。
+  - 现在实现（`internal/paste/paste_windows.go`）：
+    1. `wScan` 用 `MapVirtualKeyW(VK, MAPVK_VK_TO_VSC)` 填入当前布局的硬件 scan code；
+    2. Insert 键 `dwFlags |= KEYEVENTF_EXTENDEDKEY`，Shift 不加；
+    3. 顺序 Shift↓ → Insert↓ → Insert↑ → Shift↑，与 enigo 的 `Key::Shift(Press) + Key::Other(0x2D)(Click) + Key::Shift(Release)` 等价；
+    4. 保留 INPUT 40 字节 union 占位，防 cbSize 失败这个老坑。
 - [ ] **追踪 Wails 对 `SetSkipTaskbar` 的支持**
   一旦 Wails 给 runtime 补上跨平台任务栏 API，可以删掉 `internal/window/taskbar_windows.go` 100+ 行手写 syscall。当前保持手写实现。
 - [ ] **Linux 下 Wayland 粘贴支持**
@@ -165,6 +169,12 @@
   - 参考 EcoPaste（`src-tauri/src/plugins/paste/src/commands/macos.rs`）的做法
   - 现在流程：`copy → ResignMainKey → sleep 50ms → osascript 'System Events keystroke v using command down' → 异步 HideMain`
   - 代码：`internal/paste/paste_darwin.go` 全部改写；`app.go` `PasteItem` mac 分支重写；`internal/window/panel_darwin.m` 的 `GoPasteResignKey` + `internal/window/showhide_darwin.go` 的 `ResignMainKey` 被正式接线
+- [x] **关闭菜单栏图标后再开启无法显示** ✅ 已修复（2026-04-24）
+  - 原因：`fyne.io/systray` 内部 `Quit()` 受 `sync.Once` 保护，一个进程只能关一次。`stopTray()` 标记 `trayQuit=true` 后，再调 `startTray()` 被挡住。
+  - 方案（Windows）：参考 EcoPaste / Tauri 的 `tray_icon.set_visible(false/true)` 模式，systray 消息循环在 startup 时无条件启动并常驻，用 `Shell_NotifyIcon(NIM_DELETE/NIM_ADD)` 平滑切换通知区域图标显隐。新增 `tray.SetVisible(bool)` / `tray.CanToggle()` API，`visible_windows.go` 实现。
+  - 方案（macOS/Linux）：`fyne.io/systray` 未暴露隐藏 API，关闭后再开启仍走 `restartApp()` 兜底。
+  - 前端移除了"重启后生效"提示和 `TrayNeedsRestart()` RPC 调用。
+- [ ] **Windows 粘贴图片到 VS Code 等编辑器无法识别** — 已撤销（`clipboard_windows.go` 多格式写入方案有问题），待重新排查
 
 ---
 
