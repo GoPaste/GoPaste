@@ -191,13 +191,18 @@ func (a *App) startup(ctx context.Context) {
 			}()
 		}
 	} else {
-		// macOS/Linux：暂时禁用 tray
+		// macOS/Linux：暂时禁用 tray（systray 崩溃 workaround）。
+		// 但 macOS 上仍需响应 Dock 图标点击来呼出面板——这条路径
+		// 只是往 NSApp delegate 动态加 applicationShouldHandleReopen:
+		// 和 applicationShouldTerminateAfterLastWindowClosed: 两个
+		// 方法，和 fyne/systray 无任何关系，不会触发之前的崩溃。
 		bootProbeApp("startup: tray disabled on this platform (macOS crash workaround)")
 		_ = a.startTray
 		_ = s.ShowTrayIcon
+		tray.SetDockClickCallback(a.showPanel)
+		bootProbeApp("startup: dock click callback installed")
 	}
 	bootProbeApp("startup: tray block done")
-	_ = a.showPanel
 
 	// 7) 启动时按策略 prune
 	go a.runPrune()
