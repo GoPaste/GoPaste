@@ -7,8 +7,7 @@ package paste
 import (
 	"errors"
 
-	"golang.design/x/clipboard"
-
+	"gopaste/internal/clipboard"
 	"gopaste/internal/types"
 )
 
@@ -16,17 +15,21 @@ import (
 var ErrUnsupported = errors.New("paste: auto-paste unsupported on this platform")
 
 // WriteClipboard 把内容写回系统剪切板。
+//
+// 【darwin 必须走 internal/clipboard.Write*Clipboard*】
+// 不再使用 golang.design/x/clipboard.Write —— 那条路径裸调 NSPasteboard，
+// 与 file/image/text watcher 并发会触发 NSGenericException → abort()。
+// 详细排查见 internal/clipboard/filewatcher_darwin.go 顶部注释。
+//
+// 非 darwin 平台 internal/clipboard 包内部仍可委托给 golang.design/x/clipboard，
+// 但本入口统一对外暴露的就是 internal/clipboard 的封装。
 func WriteClipboard(t types.ItemType, content []byte) error {
-	if err := clipboard.Init(); err != nil {
-		return err
-	}
 	switch t {
 	case types.TypeImage:
-		clipboard.Write(clipboard.FmtImage, content)
+		return clipboard.WriteImage(content)
 	default:
-		clipboard.Write(clipboard.FmtText, content)
+		return clipboard.WriteText(content)
 	}
-	return nil
 }
 
 // SendPaste 模拟发送 Ctrl/Cmd+V。实现在 paste_<os>.go。

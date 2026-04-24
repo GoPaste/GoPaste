@@ -192,15 +192,97 @@ int pasteboardHasFileURL(void) {
     });
     return result;
 }
+
+// -----------------------------------------------------------------------------
+// 通用 NSPasteboard 读写（替代 golang.design/x/clipboard 在 darwin 上的实现）
+// -----------------------------------------------------------------------------
+// 【为什么必须自己写】
+// 见 docs/macos-accessibility.md / 崩溃排查记录（2026-04-24）：
+//   golang.design/x/clipboard 的 darwin 实现 (clipboard_read_string /
+//   clipboard_write_string / clipboard_read_image / clipboard_write_image)
+//   在任意 goroutine 直接裸调 [NSPasteboard generalPasteboard] dataForType:/
+//   setData:，不走任何串行化。我们自己 image/file watcher 又在 pasteboardQueue
+//   里访问同一个 NSPasteboard 单例。
+//   并发触发：watcher.dataForType 内部走 _updateTypeCacheIfNeeded 枚举
+//   _typeArray，与另一线程 setData: 的 mutate 撞车 →
+//     NSGenericException "Collection was mutated while being enumerated"
+//     → terminate handler → abort() → SIGABRT，进程整个消失。
+//   崩溃 backtrace 完美定位到 clipboard_read_string，铁证。
+//
+// 修复：所有 NSPasteboard 访问全部走 pasteboardQueue 串行化（同一线程顺序执行）。
+// 调用方在 darwin 上不再使用 golang.design/x/clipboard 的 read/write/watch。
+
+// pasteboardReadString 串行化读取 NSPasteboardTypeString。
+// 返回 strdup 后的字节，由 Go 侧 free。NULL 表示空 / 不可读。
+const char* pasteboardReadString(void) {
+    __block char *result = NULL;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            NSData *data = [pb dataForType:NSPasteboardTypeString];
+            if (data == nil || data.length == 0) {
+                return;
+            }
+            // 复制成 C 字符串。NSData 内部缓冲在 autorelease pool 销毁后失效，
+            // 这里 strndup 拷贝一份给 Go 侧持有。
+            result = (char *)malloc(data.length + 1);
+            if (result != NULL) {
+                memcpy(result, data.bytes, data.length);
+                result[data.length] = '\0';
+            }
+        }
+    });
+    return result;
+}
+
+// pasteboardWriteString 串行化写入字符串到 NSPasteboardTypeString。
+// 写之前 clearContents（与 golang.design 行为一致）。返回 0 成功 / -1 失败。
+int pasteboardWriteString(const void *bytes, unsigned long n) {
+    __block int rc = -1;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            NSData *data = (n > 0 && bytes != NULL)
+                ? [NSData dataWithBytes:bytes length:(NSUInteger)n]
+                : [NSData data];
+            [pb clearContents];
+            BOOL ok = [pb setData:data forType:NSPasteboardTypeString];
+            rc = ok ? 0 : -1;
+        }
+    });
+    return rc;
+}
+
+// pasteboardWriteImagePNG 串行化写入 PNG 图片到 NSPasteboardTypePNG。
+// 写之前 clearContents。返回 0 成功 / -1 失败。
+int pasteboardWriteImagePNG(const void *bytes, unsigned long n) {
+    __block int rc = -1;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            NSData *data = (n > 0 && bytes != NULL)
+                ? [NSData dataWithBytes:bytes length:(NSUInteger)n]
+                : [NSData data];
+            [pb clearContents];
+            BOOL ok = [pb setData:data forType:NSPasteboardTypePNG];
+            rc = ok ? 0 : -1;
+        }
+    });
+    return rc;
+}
 */
 import "C"
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"unsafe"
 )
+
+// errClipboardWrite 写 NSPasteboard 失败。底层 setData: 返回 NO 时抛出。
+var errClipboardWrite = errors.New("clipboard: write to NSPasteboard failed")
 
 // lastChangeCount 上次观察到的 pasteboard changeCount，用于跳过无变化轮询。
 var lastChangeCount int64 = -1
@@ -313,4 +395,46 @@ func pollClipboardImagePNG() []byte {
 // 纯 int64 返回，避免多处 import "C"。
 func pasteboardChangeCountGo() int64 {
 	return int64(C.pasteboardChangeCount())
+}
+
+// readClipboardStringGo 串行化读取 NSPasteboard 中的字符串内容。
+// 取代 golang.design/x/clipboard.Read(FmtText)，避免裸调 NSPasteboard
+// 与 file/image watcher 并发触发 NSGenericException（见 filewatcher 顶部注释）。
+func readClipboardStringGo() []byte {
+	cstr := C.pasteboardReadString()
+	if cstr == nil {
+		return nil
+	}
+	defer C.free(unsafe.Pointer(cstr))
+	s := C.GoString(cstr)
+	if s == "" {
+		return nil
+	}
+	return []byte(s)
+}
+
+// writeClipboardStringGo 串行化写入字符串到 NSPasteboard。
+// 取代 golang.design/x/clipboard.Write(FmtText)。返回 nil 表示成功。
+func writeClipboardStringGo(b []byte) error {
+	var p unsafe.Pointer
+	if len(b) > 0 {
+		p = unsafe.Pointer(&b[0])
+	}
+	if rc := C.pasteboardWriteString(p, C.ulong(len(b))); rc != 0 {
+		return errClipboardWrite
+	}
+	return nil
+}
+
+// writeClipboardImagePNGGo 串行化写入 PNG 字节到 NSPasteboard。
+// 取代 golang.design/x/clipboard.Write(FmtImage)。返回 nil 表示成功。
+func writeClipboardImagePNGGo(b []byte) error {
+	var p unsafe.Pointer
+	if len(b) > 0 {
+		p = unsafe.Pointer(&b[0])
+	}
+	if rc := C.pasteboardWriteImagePNG(p, C.ulong(len(b))); rc != 0 {
+		return errClipboardWrite
+	}
+	return nil
 }

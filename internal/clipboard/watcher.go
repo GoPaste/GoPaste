@@ -45,12 +45,19 @@ func (w *Watcher) Events() <-chan types.Item { return w.out }
 // Start 启动监听直到 ctx 结束。
 //
 // 初始化失败会返回错误（例如 Linux 缺少 xclip/xsel 或 Wayland 限制）。
+//
+// 【darwin 与其他平台的差异】
+// 非 darwin：直接用 golang.design/x/clipboard.Watch(FmtText) 监听文本。
+// darwin：必须用自家 startTextWatch — golang.design 的 Watch 在后台 goroutine
+// 裸调 NSPasteboard.dataForType:，与我们 file/image watcher 在 pasteboardQueue
+// 里的访问并发，会触发 NSGenericException 被 abort()，进程整个消失。
+// 详细排查见 filewatcher_darwin.go 顶部注释。
 func (w *Watcher) Start(ctx context.Context) error {
 	if err := clipboard.Init(); err != nil {
 		return fmt.Errorf("clipboard: init: %w", err)
 	}
 
-	textCh := clipboard.Watch(ctx, clipboard.FmtText)
+	textCh := startTextWatch(ctx)
 	// 图片监听走平台特化实现（见 imagewatch_{darwin,other}.go）。
 	// darwin 上 golang.design/x/clipboard 只识别 public.png，漏掉系统截图
 	// 这种 public.tiff 场景——那里改由我们自己轮询并做 TIFF→PNG 转换。
