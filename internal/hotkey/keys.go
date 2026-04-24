@@ -9,6 +9,7 @@ import (
 
 // keyMap 所有支持的键名 → hk.Key 映射。
 // 键名统一小写。前端录制后发送的 key.code / key.key 需对应到此表。
+// OEM 符号键（` - = [ ] \ ; ' , . /）通过各平台 keys_<os>.go 的 oemKeys() 在 init() 里合并进来。
 var keyMap = map[string]hk.Key{
 	"a": hk.KeyA, "b": hk.KeyB, "c": hk.KeyC, "d": hk.KeyD,
 	"e": hk.KeyE, "f": hk.KeyF, "g": hk.KeyG, "h": hk.KeyH,
@@ -39,10 +40,17 @@ var keyMap = map[string]hk.Key{
 	"down":      hk.KeyDown,
 	"left":      hk.KeyLeft,
 	"right":     hk.KeyRight,
-	"arrowup":   hk.KeyUp,
-	"arrowdown": hk.KeyDown,
-	"arrowleft": hk.KeyLeft,
+	"arrowup":    hk.KeyUp,
+	"arrowdown":  hk.KeyDown,
+	"arrowleft":  hk.KeyLeft,
 	"arrowright": hk.KeyRight,
+}
+
+func init() {
+	// 合并各平台 OEM 符号键（` - = [ ] \ ; ' , . /）
+	for k, v := range oemKeys() {
+		keyMap[k] = v
+	}
 }
 
 func letterKey(c byte) hk.Key {
@@ -61,7 +69,8 @@ func digitKey(c byte) hk.Key {
 	return hk.Key0
 }
 
-// ParseKey 解析键名字符串为 hk.Key。支持 A-Z, 0-9, F1-F12, Space, Tab, Enter, Escape, Delete, 方向键。
+// ParseKey 解析键名字符串为 hk.Key。支持 A-Z, 0-9, F1-F12, Space, Tab, Enter, Escape, Delete,
+// 方向键，以及符号键 ` - = [ ] \ ; ' , . /（通过平台 OEM 键映射）。
 func ParseKey(name string) (hk.Key, error) {
 	if name == "" {
 		return 0, fmt.Errorf("hotkey: empty key")
@@ -95,6 +104,7 @@ func SupportedKeys() []string {
 		"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
 		"Space", "Tab", "Enter", "Escape", "Delete",
 		"Up", "Down", "Left", "Right",
+		"`", "-", "=", "[", "]", `\`, ";", "'", ",", ".", "/",
 	} {
 		k, err := ParseKey(name)
 		if err == nil && !seen[k] {
