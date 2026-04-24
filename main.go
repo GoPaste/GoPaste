@@ -81,8 +81,9 @@ func main() {
 
 	app := NewApp()
 
-	// 预加载设置以支持静默启动
+	// 预加载设置以支持静默启动 & 窗口背景色（根据主题）
 	startHidden := false
+	theme := "dark" // 默认跟随 settings.Default() 的 Theme
 	if paths, err := config.ResolvePaths(); err == nil {
 		if data, err := os.ReadFile(paths.Settings); err == nil || errors.Is(err, os.ErrNotExist) {
 			s := settings.Default()
@@ -92,15 +93,29 @@ func main() {
 				}
 			}
 			startHidden = s.SilentStart
+			if s.Theme == "light" {
+				theme = "light"
+			}
 		}
 	}
 
-	bootProbe(fmt.Sprintf("main: before wails.Run startHidden=%v", startHidden))
+	// 窗口背景色：必须与 CSS :root/[data-theme] 的 --bg 保持一致，
+	// 否则拉伸窗口时 WebView 未及时重绘，会露出窗口底色形成"黑边/白边"。
+	// Mac 下会被 Mac.WindowIsTranslucent=true 覆盖成透明；
+	// Windows/Linux 使用当前主题对应的 --bg 值。
+	var bg *options.RGBA
+	if theme == "light" {
+		bg = &options.RGBA{R: 245, G: 245, B: 245, A: 255} // 对应 --bg: #f5f5f5
+	} else {
+		bg = &options.RGBA{R: 20, G: 22, B: 28, A: 255} // 对应 --bg: #14161c
+	}
+
+	bootProbe(fmt.Sprintf("main: before wails.Run startHidden=%v theme=%s", startHidden, theme))
 	appOpts := &options.App{
 		Title:             "GoPaste",
-		Width:             480,
+		Width:             680,
 		Height:            680,
-		MinWidth:          480,
+		MinWidth:          450,
 		MinHeight:         600,
 		DisableResize:     false,
 		StartHidden:       startHidden,
@@ -108,9 +123,7 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		// Mac 下会被 Mac.WindowIsTranslucent=true 覆盖成透明；
-		// Windows/Linux 下保留原有不透明背景色。
-		BackgroundColour: &options.RGBA{R: 20, G: 22, B: 28, A: 1},
+		BackgroundColour: bg,
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{

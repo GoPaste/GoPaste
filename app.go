@@ -175,7 +175,23 @@ func (a *App) startup(ctx context.Context) {
 	a.registerHotkey()
 
 	// 6) 托盘
-	if s.ShowTrayIcon {
+	//
+	// 策略分平台：
+	//   - Windows（tray.CanToggle() == true）：始终启动 systray（消息循环常驻），
+	//     如果 ShowTrayIcon=false 则在 onReady 后立即调 SetVisible(false) 隐藏图标。
+	//     这样后续用户在设置页开关时只需 SetVisible(true/false)，无需重启进程。
+	//   - macOS/Linux：只在 ShowTrayIcon=true 时启动。关闭后再开启走 restartApp。
+	if tray.CanToggle() {
+		// Windows：始终启动
+		a.startTray()
+		if !s.ShowTrayIcon {
+			// 给 systray onReady 足够时间完成图标设置，再隐藏
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				tray.SetVisible(false)
+			}()
+		}
+	} else if s.ShowTrayIcon {
 		a.startTray()
 	}
 	// 即使不显示托盘也要设置 Dock 回调
@@ -413,6 +429,7 @@ func (a *App) togglePanel() {
 		window.ShowMain(a.ctx)
 		a.positionWindow()
 		a.setVisible(true)
+		wailsruntime.EventsEmit(a.ctx, "window:show")
 		return
 	}
 	a.visMu.Lock()
@@ -428,6 +445,9 @@ func (a *App) togglePanel() {
 		window.ShowMain(a.ctx)
 		a.positionWindow()
 		a.setVisible(true)
+		// 通知前端窗口已显示，触发"激活时回到顶部 / 切换至全部分组"等逻辑。
+		// Windows 上 visibilitychange 不一定由 WindowShow 触发，所以需要显式 emit。
+		wailsruntime.EventsEmit(a.ctx, "window:show")
 	}
 }
 
@@ -443,6 +463,7 @@ func (a *App) showPanel() {
 	window.ShowMain(a.ctx)
 	a.positionWindow()
 	a.setVisible(true)
+	wailsruntime.EventsEmit(a.ctx, "window:show")
 }
 
 // captureFocusBeforeShow 在窗口显示前抓住当前前台窗口，便于稍后粘贴时还原焦点。
@@ -572,8 +593,12 @@ func (a *App) initFileLogger(root string) {
 }
 
 // startTray 启动系统托盘。
+//
 // 注意：fyne/systray 内部用 sync.Once 保护 Quit，一个进程只能关一次；
 // 关闭之后再调用 Start 不会真正弹出图标，此时 a.trayQuit=true，需要重启进程。
+//
+// Windows 上 systray 在 startup 时无条件启动（消息循环常驻），后续通过
+// tray.SetVisible() 平滑切换图标显隐，不会走 stopTray。
 func (a *App) startTray() {
 	if a.trayEnd != nil {
 		return // 已启动
@@ -591,6 +616,7 @@ func (a *App) startTray() {
 }
 
 // stopTray 关闭系统托盘。
+// 仅在 macOS/Linux 上使用（Windows 上走 tray.SetVisible(false) 路径）。
 func (a *App) stopTray() {
 	if a.trayEnd != nil {
 		a.trayEnd()
@@ -634,7 +660,7 @@ func (a *App) CopyToClipboard(id int64) error {
 }
 
 // PasteItem 写回剪切板并粘贴到前台窗口。
-// 流程：写剪贴板 → 隐藏窗口 → 等焦点切换 → 发送 Ctrl/Cmd+V
+// 流程：写剪贴板 → 隐藏窗口 → 等焦点切换 → 发送 Shift+Insert(Win) / Cmd+V(Mac) / Ctrl+V(Linux)
 // 是否由单击还是双击触发，由前端根据 PasteTrigger 设置绑定事件决定。
 func (a *App) PasteItem(id int64) error {
 	// 防重入：用户双击或 UI 抖动可能连触两次 PasteItem。
@@ -749,8 +775,8 @@ func (a *App) PasteItem(id int64) error {
 		time.Sleep(120 * time.Millisecond)
 	} else {
 		// Windows / Linux：WindowHide 后焦点不会自动回到上一个窗口，
-		// 必须显式 SetForegroundWindow / xdotool activate，否则 Ctrl+V
-		// 发到桌面，永远粘不出来。
+		// 必须显式 SetForegroundWindow / xdotool activate，否则
+		// Shift+Insert（Windows）/ Ctrl+V（Linux）发到桌面，永远粘不出来。
 		if a.ctx != nil && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("PasteItem: before WindowHide")
@@ -869,13 +895,27 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	a.applyTaskbarIcon(0)
 
 	// 托盘图标实时生效：
-	//   - 从"显示"切到"隐藏"：直接调用 systray.Quit() 关闭，图标立刻消失。
-	//   - 从"隐藏"切到"显示"：本进程内首次启动（a.trayEnd == nil）可以 Start；
-	//     如果之前关过一次（systray 内部 quitOnce 已消耗），Start 会被一次性门
-	//     挡住——这种场景才需要重启，由前端看到 trayStopped=true 时自行提示。
+	//
+	// Windows（tray.CanToggle() == true）：
+	//   systray 消息循环在 startup 时就已启动并常驻，这里只需调
+	//   tray.SetVisible(true/false) 来添加/删除通知区域图标，无需
+	//   重启进程。等效于 Tauri 的 tray_icon.set_visible()。
+	//
+	// macOS/Linux（tray.CanToggle() == false）：
+	//   fyne.io/systray 未暴露隐藏 API，且 Quit() 受 sync.Once 限制。
+	//   关闭后再开启仍走 restartApp 兜底（和之前一样）。
 	if prev.ShowTrayIcon != ns.ShowTrayIcon {
-		if ns.ShowTrayIcon {
-			a.startTray() // 首次启用或进程内尚未关闭时生效
+		if tray.CanToggle() {
+			// Windows：平滑切换，无需重启
+			tray.SetVisible(ns.ShowTrayIcon)
+		} else if ns.ShowTrayIcon {
+			if a.trayQuit {
+				// macOS/Linux：sync.Once 门已消耗，自动重启
+				a.log.Info("tray: re-enable after quit, auto-restarting")
+				go a.restartApp()
+				return nil
+			}
+			a.startTray()
 		} else {
 			a.stopTray()
 		}
@@ -893,8 +933,8 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 }
 
 // TrayNeedsRestart 返回是否需要重启才能重新显示托盘图标。
-// 仅当本进程内已关过一次托盘（systray 内部 quitOnce 已消耗）时为 true；
-// 前端在 showTrayIcon 从 false 切到 true 时据此决定是否提示"重启生效"。
+// Deprecated: v0.2+ 中 UpdateSettings 会在需要时自动重启，前端无需再调用此方法。
+// 保留此方法以兼容旧前端。
 func (a *App) TrayNeedsRestart() bool {
 	return a.trayQuit
 }

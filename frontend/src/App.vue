@@ -392,9 +392,23 @@ function toggleAlwaysOnTop() {
   WindowSetAlwaysOnTop(alwaysOnTop.value)
 }
 
+// 同步 WebView2 底层背景色：
+// Windows WebView2 在非透明模式下，自身底色默认白色。窗口拉伸/缩放时 WebView
+// 尚未重绘的新增区域会短暂露出该底色——暗色主题下表现为白边。
+// 通过设置 document.documentElement.style.backgroundColor 为当前主题的 --bg 值，
+// 让 WebView2 把这个颜色作为底色，拉伸时就不会闪白/闪黑。
+// 此方法不依赖 Wails 的 BackgroundColour，运行中切换主题也能即时跟随。
+function syncWebViewBg() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+  document.documentElement.style.backgroundColor = bg
+  document.body.style.backgroundColor = bg
+}
+
 function applyTheme(t: string) {
   theme.value = (t === 'light') ? 'light' : 'dark'
   document.documentElement.setAttribute('data-theme', theme.value)
+  // 主题切换后立刻同步 WebView 底色
+  syncWebViewBg()
 }
 
 async function loadSettings() {
@@ -408,7 +422,11 @@ async function loadSettings() {
 }
 
 // 窗口激活时：根据设置回到顶部 / 切换至全部分组
-async function onWindowFocus() {
+// 注意：用 visibilitychange 而不是 focus 事件——因为在 WebView2 里
+// 拖动窗口（drag-region）会触发 blur/focus 但不会改 visibilityState，
+// 只有 HideWindow + ShowWindow 才会让 document 从 hidden 变 visible。
+// 这样拖窗口时不会误重置筛选/滚动位置。
+async function onWindowShow() {
   if (view.value !== 'main') return
   const s: any = await GetSettings()
   if (!s) return
@@ -424,6 +442,12 @@ async function onWindowFocus() {
   }
   // 聚焦搜索框
   searchRef.value?.focus()
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    onWindowShow()
+  }
 }
 
 // 当前筛选 tab 的索引（用于 Tab/左右键切换）
@@ -472,17 +496,24 @@ onMounted(async () => {
   document.documentElement.setAttribute('data-os', isMac ? 'mac' : 'other')
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('blur', onWindowBlur)
-  window.addEventListener('focus', onWindowFocus)
+  window.addEventListener('resize', syncWebViewBg)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  // 监听后端 emit 的 window:show 事件——Windows 上 visibilitychange 不一定触发，
+  // 需要后端显式通知才能执行"激活时回到顶部 / 切换至全部分组"等功能。
+  EventsOn('window:show', () => { onWindowShow() })
   await loadSettings()
+  // loadSettings → applyTheme 已调 syncWebViewBg，这里再兜底一次确保初始化正确
+  syncWebViewBg()
   await refresh()
   EventsOn('clipboard:new', async () => { await refresh() })
-  unsubscribe = () => EventsOff('clipboard:new')
+  unsubscribe = () => { EventsOff('clipboard:new'); EventsOff('window:show') }
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('blur', onWindowBlur)
-  window.removeEventListener('focus', onWindowFocus)
+  window.removeEventListener('resize', syncWebViewBg)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   if (unsubscribe) unsubscribe()
 })
 
@@ -736,8 +767,8 @@ function onWindowBlur() {
             <span>{{ t('note') }}</span>
             <button class="note-close" @click="onNoteCancel"><span style="font-size:16px;color:#a8adbd">✕</span></button>
           </div>
-          <input class="note-input" v-model="noteText" :placeholder="t('noteHint')"
-            @keydown.enter="onNoteOk" @keydown.escape="onNoteCancel" autofocus />
+          <input ref="noteInputRef" class="note-input" v-model="noteText" :placeholder="t('noteHint')"
+            @keydown.enter="onNoteOk" @keydown.escape="onNoteCancel" />
           <div class="confirm-actions">
             <button class="cbtn cbtn-cancel" @click="onNoteCancel">{{ t('cancel') }}</button>
             <button class="cbtn cbtn-primary" @click="onNoteOk">{{ t('ok') }}</button>
@@ -772,7 +803,7 @@ html, body, #app {
   margin: 0; padding: 0;
   height: 100vh; width: 100vw;
   font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: transparent; color: var(--text); overflow: hidden;
+  background: var(--bg); color: var(--text); overflow: hidden;
 }
 .app {
   display: flex; flex-direction: column; height: 100vh;
