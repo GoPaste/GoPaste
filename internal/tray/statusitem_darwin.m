@@ -80,9 +80,8 @@ void GoPasteStatusItemInstall(const unsigned char *icon_png, int icon_len) {
             if (img) {
                 // 菜单栏标准尺寸 18pt（@2x → 36px），但 macOS 会自动缩放
                 [img setSize:NSMakeSize(18, 18)];
-                // template=YES：系统按深浅主题自动染色（黑/白）
-                // 如果用彩色图标，改为 NO 即可
-                [img setTemplate:YES];
+                // template=NO：彩色图标，与 Dock 图标保持视觉一致
+                [img setTemplate:NO];
                 gStatusItem.button.image = img;
             }
         } else {

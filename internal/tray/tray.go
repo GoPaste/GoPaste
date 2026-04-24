@@ -105,8 +105,8 @@ func Start(cb Callbacks) (cleanup func()) {
 	startedMu.Unlock()
 
 	if runtime.GOOS == "darwin" {
-		// macOS：纯 cgo NSStatusItem，用模板图标（深浅主题自适应）
-		end := installStatusItem(cb, iconTemplatePNG)
+		// macOS：纯 cgo NSStatusItem，用彩色 appicon（与 Dock 图标一致）
+		end := installStatusItem(cb, iconColorPNG)
 		return end
 	}
 
