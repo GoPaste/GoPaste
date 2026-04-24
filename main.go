@@ -48,6 +48,14 @@ func main() {
 	bootProbe("main: enter")
 	defer bootProbe("main: exit")
 
+	// stderr 重定向：.app 双击启动时 stderr 默认进 console，无人接收，
+	// Go runtime panic / fatal error 的栈打不到任何文件，崩溃排查只能靠
+	// system DiagnosticReports（信息严重不足）。这里把 stderr/stdout 直接
+	// 接到固定文件，保证以后任何 panic 都能在该文件里看到完整 Go 栈。
+	// 注意：用 dup2 替换 fd2，而不是只覆盖 os.Stderr——Go runtime 写 panic
+	// 的是底层 fd2（write(2,...)），不是 os.Stderr 这个 *File。
+	redirectStderr()
+
 	// 静默死亡诊断：
 	//  - SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT：CGo / AppKit 内部断言失败、野指针、
 	//    非主线程访问 UI 等都会落到这里。Go runtime 默认是 print trace 后 exit(2)。
@@ -125,6 +133,7 @@ func main() {
 		},
 		BackgroundColour: bg,
 		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,

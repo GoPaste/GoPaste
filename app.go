@@ -150,52 +150,54 @@ func (a *App) startup(ctx context.Context) {
 		a.setVisible(true)
 	}
 
-	// 4) 剪切板监听（文本 + 图片）
-	// 共享抑制器：FileWatcher 检测到文件后，短时间内让文本 Watcher 跳过对应路径文本，
-	// 避免同一次复制同时产生 file / text 两条历史。
+	// === 二分调试 step2：只开剪贴板，其它仍禁 ===
+	bootProbeApp("startup: enabling clipboard only")
 	suppressor := clipboard.NewSuppressor()
-
 	w := clipboard.New()
 	w.SetSuppressor(suppressor)
 	if err := w.Start(ctx); err != nil {
+		bootProbeApp("startup: clipboard.Start err=" + err.Error())
 		a.log.Error("start clipboard watcher", "err", err)
 	} else {
 		a.watcher = w
 		go a.consumeEvents(ctx)
 	}
+	bootProbeApp("startup: text clipboard started")
 
-	// 4b) 文件剪切板监听
 	fw := clipboard.NewFileWatcher()
 	fw.SetSuppressor(suppressor)
 	fw.Start(ctx)
 	a.fileWatch = fw
 	go a.consumeFileEvents(ctx)
+	bootProbeApp("startup: file clipboard started")
 
-	// 5) 快捷键
+	bootProbeApp("startup: registering hotkey")
 	a.registerHotkey()
+	bootProbeApp("startup: hotkey registered")
 
-	// 6) 托盘
-	//
-	// 策略分平台：
-	//   - Windows（tray.CanToggle() == true）：始终启动 systray（消息循环常驻），
-	//     如果 ShowTrayIcon=false 则在 onReady 后立即调 SetVisible(false) 隐藏图标。
-	//     这样后续用户在设置页开关时只需 SetVisible(true/false)，无需重启进程。
-	//   - macOS/Linux：只在 ShowTrayIcon=true 时启动。关闭后再开启走 restartApp。
+	// === macOS 临时禁用 tray ===
+	// 现状：systray (fyne.io/systray) 在 macOS 上，无论 Start 时机还是
+	// 图标点击都会触发 objc_msgSend 野指针崩溃 (PC=libobjc+0x28, addr=0x20)。
+	// 等后续换实现（例如直接 cgo 写 NSStatusItem）再启用。
+	// 这里保持 Windows 路径正常。
+	bootProbeApp("startup: entering tray block")
 	if tray.CanToggle() {
-		// Windows：始终启动
+		// Windows
 		a.startTray()
 		if !s.ShowTrayIcon {
-			// 给 systray onReady 足够时间完成图标设置，再隐藏
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 				tray.SetVisible(false)
 			}()
 		}
-	} else if s.ShowTrayIcon {
-		a.startTray()
+	} else {
+		// macOS/Linux：暂时禁用 tray
+		bootProbeApp("startup: tray disabled on this platform (macOS crash workaround)")
+		_ = a.startTray
+		_ = s.ShowTrayIcon
 	}
-	// 即使不显示托盘也要设置 Dock 回调
-	tray.SetDockClickCallback(a.showPanel)
+	bootProbeApp("startup: tray block done")
+	_ = a.showPanel
 
 	// 7) 启动时按策略 prune
 	go a.runPrune()
@@ -223,6 +225,14 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.repo != nil {
 		_ = a.repo.Close()
 	}
+}
+
+// domReady 在 wails 完成 runtime.js 注入、前端 DOM 就绪之后被调用。
+func (a *App) domReady(ctx context.Context) {
+	_ = ctx
+	bootProbeApp("domReady: enter")
+	// tray 暂时禁用，这里不再 flush systray.start。
+	// 保留 hook 以便将来排障。
 }
 
 func (a *App) registerHotkey() {
@@ -518,19 +528,26 @@ func (a *App) convertMainWindowToPanelWithRetry() {
 		return
 	}
 	// Wails 创建 NSWindow 的时机略晚于 OnStartup 回调——startup 刚调用时
-	// [NSApp windows] 可能还没收录主窗口。给 3 秒轮询足够宽裕，正常情况
-	// 下首次尝试就能命中。
+	// [NSApp windows] 可能还没收录主窗口。最多 3 秒轮询。
+	//
+	// 关键作用：
+	//   1) 把 NSWindow 替换成 GoPasteNSPanel（NSPanel 子类）
+	//   2) 加 NSWindowStyleMaskNonactivatingPanel：显示面板不抢前台 active app
+	//      → 粘贴流程才能正常工作
+	//   3) 隐藏左上角 traffic lights（close/min/zoom）
+	//   4) 设置 floating level / canJoinAllSpaces / hidesOnDeactivate=NO
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		// ConvertToNonactivatingPanel 内部自己找窗口；没找到是 NSLog 警告，
-		// 不抛错。这里我们靠"主窗口已经存在"这一外部事实来判断是否成功，
-		// 简单起见固定等 300ms 再做一次，幂等不会出错。
 		window.ConvertToNonactivatingPanel(window.Title)
-		time.Sleep(300 * time.Millisecond)
-		// 做第二次兜底（覆盖 Wails 延迟创建窗口的情形），然后退出。
-		window.ConvertToNonactivatingPanel(window.Title)
-		return
+		// ConvertToNonactivatingPanel 内部幂等 + 找不到窗口会 NSLog 一条。
+		// 我们这里简单轮询，命中后再调一次也无副作用。
+		time.Sleep(200 * time.Millisecond)
+		// 尝试 3~4 次就够了，大概 800ms。给 1.5s 充分冗余后退出。
+		if time.Since(deadline.Add(-3*time.Second)) > 1500*time.Millisecond {
+			break
+		}
 	}
+	bootProbeApp("convertMainWindowToPanelWithRetry: done")
 }
 
 // applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。

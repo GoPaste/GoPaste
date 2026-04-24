@@ -25,7 +25,32 @@ import (
 var (
 	started   bool      // systray 是否已经启动过
 	startedMu sync.Mutex
+
+	// pendingStart: systray.RunWithExternalLoop 返回的 start()，延迟到
+	// wails OnDomReady 之后由 FlushPendingStart 调度到主线程执行。
+	pendingStart   func()
+	pendingStartMu sync.Mutex
 )
+
+// SetPendingStart 存储待调度的 systray start 函数。由 tray 包内部调用。
+func SetPendingStart(fn func()) {
+	pendingStartMu.Lock()
+	pendingStart = fn
+	pendingStartMu.Unlock()
+}
+
+// FlushPendingStart 由 App 在 wails OnDomReady 后调用，把 systray.start()
+// 调度到主线程执行。无平台差异：Linux 上 dispatchOnMain 同步执行。
+func FlushPendingStart() {
+	pendingStartMu.Lock()
+	fn := pendingStart
+	pendingStart = nil
+	pendingStartMu.Unlock()
+	if fn == nil {
+		return
+	}
+	dispatchOnMain(fn)
+}
 
 // Callbacks 托盘菜单项 / 交互行为。
 type Callbacks struct {
@@ -41,15 +66,27 @@ var iconICO []byte
 //go:embed icon.png
 var iconPNG []byte
 
-// iconTemplatePNG 专供 macOS 状态栏使用的模板图标：
+// iconTemplatePNG 模板图标（保留备用）：
 //   - 背景完全透明，主体为黑色 "P" 剪影；
 //   - 系统会按菜单栏深浅主题自动反色渲染。
-// 这张图由 build/gen_tray_icon.go 生成，尺寸 44×44（22pt @2x）。
-// 原 icon.png 是彩色 app 图标，直接喂给 SetTemplateIcon 会被系统全染成
-// 一整块纯色，表现为"状态栏上一个白色/黑色方块"。
+// 由 build/gen_tray_icon.go 生成，尺寸 44×44（22pt @2x）。
+//
+// 当前 darwin 走的是 iconColorPNG（彩色），与 dock 图标视觉一致。
+// 如要恢复"自适应深浅模式"的规范做法，把 applyIcon() 里 darwin 分支
+// 改回 SetTemplateIcon(iconTemplatePNG, iconTemplatePNG) 即可。
 //
 //go:embed icon_template.png
 var iconTemplatePNG []byte
+
+// iconColorPNG 彩色 macOS 状态栏图标：
+//   - 由 build/gen_appicon.py 从 build/appicon.src.png 缩放生成；
+//   - 尺寸 44×44（22pt @2x），自带圆角；
+//   - 走 SetIcon（非 template），系统不会再染色，所见即所得。
+// 代价：dark mode 下不会自动反色。这是用户主动选择的取舍
+// （希望菜单栏图标和 dock 图标完全一致），不是 bug。
+//
+//go:embed icon_color.png
+var iconColorPNG []byte
 
 // Start 启动系统托盘。
 //
@@ -122,9 +159,14 @@ func Start(cb Callbacks) (cleanup func()) {
 
 	// macOS / Linux：外部主循环集成。
 	start, end := systray.RunWithExternalLoop(onReady, onExit)
-	// start() 必须在主线程执行（NSStatusBar 要求）。dispatch_darwin.go 提供
-	// 了主线程调度；Linux 上 dispatchOnMain 为 no-op 直接同步执行。
-	dispatchOnMain(start)
+	// 注意：start() 必须在主线程执行，且必须在 wails 完成启动序列（包括
+	// 首次 _ExecJS 注入 runtime.js）之后。否则 NSStatusBar 创建和 wails
+	// 的 WKWebView/主窗口初始化在主队列里交错，会导致 objc_msgSend 野
+	// 指针崩溃 (PC=libobjc+0x28, addr=0x20)。
+	//
+	// 稳妥做法：延迟到 wails.OnDomReady 之后几百 ms 再调 start()。
+	// 我们把 start 存到 pendingStart，由 App.OnDomReady 触发真正调度。
+	SetPendingStart(start)
 	return func() {
 		end()
 	}
@@ -136,7 +178,14 @@ func applyIcon() {
 	if runtime.GOOS == "windows" {
 		systray.SetIcon(iconICO)
 	} else if runtime.GOOS == "darwin" {
-		systray.SetTemplateIcon(iconTemplatePNG, iconTemplatePNG)
+		// 用户选择菜单栏图标与 dock 图标视觉一致：用彩色 SetIcon，
+		// 而非 template。如要恢复自适应深浅模式的规范做法，改回
+		// SetTemplateIcon(iconTemplatePNG, iconTemplatePNG) 即可。
+		systray.SetIcon(iconColorPNG)
+		// 注：v1/v2 两版 setTrayIconSizePt 都会让主线程 RunMainLoop
+		// SIGSEGV(addr=0x20)。临时全部禁用以确认基线稳定。换思路用
+		// "改 PNG 内容比例（让图形撑满更多画布）"来视觉放大图标。
+		// setTrayIconSizePt(22)
 	} else {
 		systray.SetIcon(iconPNG)
 	}
