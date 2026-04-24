@@ -199,7 +199,12 @@ func (a *App) startup(ctx context.Context) {
 		bootProbeApp("startup: tray disabled on this platform (macOS crash workaround)")
 		_ = a.startTray
 		_ = s.ShowTrayIcon
-		tray.SetDockClickCallback(a.showPanel)
+		// showPanel 内部会调 wailsruntime.* —— 这些调用会等主线程处理，
+		// 而 applicationShouldHandleReopen: 本身就在主线程，直接调会死锁。
+		// 用 goroutine 脱离主线程后再调。
+		tray.SetDockClickCallback(func() {
+			go a.showPanel()
+		})
 		bootProbeApp("startup: dock click callback installed")
 	}
 	bootProbeApp("startup: tray block done")
