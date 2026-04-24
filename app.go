@@ -175,14 +175,9 @@ func (a *App) startup(ctx context.Context) {
 	a.registerHotkey()
 	bootProbeApp("startup: hotkey registered")
 
-	// === macOS 临时禁用 tray ===
-	// 现状：systray (fyne.io/systray) 在 macOS 上，无论 Start 时机还是
-	// 图标点击都会触发 objc_msgSend 野指针崩溃 (PC=libobjc+0x28, addr=0x20)。
-	// 等后续换实现（例如直接 cgo 写 NSStatusItem）再启用。
-	// 这里保持 Windows 路径正常。
 	bootProbeApp("startup: entering tray block")
 	if tray.CanToggle() {
-		// Windows
+		// Windows：systray.Run 独立线程，支持 SetVisible 平滑切换
 		a.startTray()
 		if !s.ShowTrayIcon {
 			go func() {
@@ -191,17 +186,14 @@ func (a *App) startup(ctx context.Context) {
 			}()
 		}
 	} else {
-		// macOS/Linux：暂时禁用 tray（systray 崩溃 workaround）。
-		// 但 macOS 上仍需响应 Dock 图标点击来呼出面板——这条路径
-		// 只是往 NSApp delegate 动态加 applicationShouldHandleReopen:
-		// 和 applicationShouldTerminateAfterLastWindowClosed: 两个
-		// 方法，和 fyne/systray 无任何关系，不会触发之前的崩溃。
-		bootProbeApp("startup: tray disabled on this platform (macOS crash workaround)")
-		_ = a.startTray
-		_ = s.ShowTrayIcon
-		// showPanel 内部会调 wailsruntime.* —— 这些调用会等主线程处理，
-		// 而 applicationShouldHandleReopen: 本身就在主线程，直接调会死锁。
-		// 用 goroutine 脱离主线程后再调。
+		// macOS：改用纯 cgo NSStatusItem，不再依赖 fyne.io/systray。
+		// tray.Start 内部对 darwin 会走 installStatusItem（ObjC ARC 持有所有
+		// ObjC 对象），彻底避免 Go GC 回收 ObjC target 的野指针崩溃。
+		// start 时机无需等 domReady——NSStatusItem 不依赖 WKWebView/主窗口。
+		bootProbeApp("startup: starting native NSStatusItem tray")
+		a.startTray()
+		bootProbeApp("startup: native tray started")
+		// Dock 图标点击也要响应（go showPanel 脱离主线程避免死锁）
 		tray.SetDockClickCallback(func() {
 			go a.showPanel()
 		})
@@ -241,8 +233,11 @@ func (a *App) shutdown(ctx context.Context) {
 func (a *App) domReady(ctx context.Context) {
 	_ = ctx
 	bootProbeApp("domReady: enter")
-	// tray 暂时禁用，这里不再 flush systray.start。
-	// 保留 hook 以便将来排障。
+	// macOS tray 已改为纯 cgo NSStatusItem，在 startup 里直接启动，
+	// 无需等 domReady。Linux（fyne.io/systray）仍需 FlushPendingStart。
+	if runtime.GOOS != "darwin" {
+		tray.FlushPendingStart()
+	}
 }
 
 func (a *App) registerHotkey() {

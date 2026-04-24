@@ -90,11 +90,13 @@ var iconColorPNG []byte
 
 // Start 启动系统托盘。
 //
-//   - macOS：NSApp 已被 Wails 持有主线程，必须使用 RunWithExternalLoop，
-//     并把返回的 start() 调度到主线程执行，否则 NSStatusBar 会在非主线程
-//     构建，表现为"菜单栏无图标且无报错"。
-//   - Linux：同样使用 RunWithExternalLoop（GTK 主循环由 Wails 持有）。
-//   - Windows：systray 自己跑消息循环，放到独立 goroutine 里即可。
+//   - macOS：用纯 cgo NSStatusItem 实现，完全绕开 fyne.io/systray。
+//     fyne/systray 在 macOS 上会把一个 Go runtime 分配的 block/对象设为
+//     NSStatusItem 的 ObjC target，Go GC 可能回收该对象，点击时
+//     objc_msgSend 访问已释放内存 → SIGSEGV (PC=libobjc+0x28, addr=0x20)。
+//     纯 cgo 方案所有 ObjC 对象由 ARC 持有，Go GC 无法触及。
+//   - Linux：仍走 fyne.io/systray（RunWithExternalLoop）。
+//   - Windows：systray.Run 放独立 goroutine。
 //
 // 返回 cleanup 回调：调用后关闭托盘。
 func Start(cb Callbacks) (cleanup func()) {
@@ -102,19 +104,24 @@ func Start(cb Callbacks) (cleanup func()) {
 	started = true
 	startedMu.Unlock()
 
+	if runtime.GOOS == "darwin" {
+		// macOS：纯 cgo NSStatusItem，用模板图标（深浅主题自适应）
+		end := installStatusItem(cb, iconTemplatePNG)
+		return end
+	}
+
+	// Windows / Linux：继续用 fyne.io/systray
 	onReady := func() {
 		applyIcon()
 		systray.SetTitle("")
 		systray.SetTooltip("GoPaste · 剪切板管理")
 
-		// 左键单击图标 → 显示/隐藏主面板
 		systray.SetOnTapped(func() {
 			if cb.OnShow != nil {
 				cb.OnShow()
 			}
 		})
 
-		// 右键菜单项
 		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
 		systray.AddSeparator()
 		mAbout := systray.AddMenuItem("关于", "版本与项目信息")
@@ -152,24 +159,14 @@ func Start(cb Callbacks) (cleanup func()) {
 	onExit := func() {}
 
 	if runtime.GOOS == "windows" {
-		// Windows 上 systray.Run 会内部创建消息线程，放 goroutine 里跑即可。
 		go systray.Run(onReady, onExit)
 		return func() { systray.Quit() }
 	}
 
-	// macOS / Linux：外部主循环集成。
+	// Linux
 	start, end := systray.RunWithExternalLoop(onReady, onExit)
-	// 注意：start() 必须在主线程执行，且必须在 wails 完成启动序列（包括
-	// 首次 _ExecJS 注入 runtime.js）之后。否则 NSStatusBar 创建和 wails
-	// 的 WKWebView/主窗口初始化在主队列里交错，会导致 objc_msgSend 野
-	// 指针崩溃 (PC=libobjc+0x28, addr=0x20)。
-	//
-	// 稳妥做法：延迟到 wails.OnDomReady 之后几百 ms 再调 start()。
-	// 我们把 start 存到 pendingStart，由 App.OnDomReady 触发真正调度。
 	SetPendingStart(start)
-	return func() {
-		end()
-	}
+	return func() { end() }
 }
 
 // applyIcon 设置平台对应的图标。
