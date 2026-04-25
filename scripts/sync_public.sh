@@ -8,6 +8,13 @@ set -e
 CURRENT_BRANCH=$(git symbolic-ref --short HEAD)
 PUBLIC_BRANCH="public-sync"
 
+# 确保不在临时分支上执行
+if [ "$CURRENT_BRANCH" = "$PUBLIC_BRANCH" ]; then
+  echo "错误：当前在临时分支 $PUBLIC_BRANCH 上，请先切回 master："
+  echo "  git checkout -f master && git branch -D $PUBLIC_BRANCH"
+  exit 1
+fi
+
 echo ">>> 当前分支：$CURRENT_BRANCH"
 echo ">>> 开始同步到 public 仓库..."
 
@@ -17,10 +24,18 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 1
 fi
 
+# 异常时自动清理：切回原分支并删除临时分支
+cleanup() {
+  echo ">>> 清理临时分支..."
+  git checkout -f "$CURRENT_BRANCH" 2>/dev/null || true
+  git branch -D "$PUBLIC_BRANCH" 2>/dev/null || true
+}
+trap cleanup ERR
+
 # 删除旧的临时分支（如果存在）
 git branch -D "$PUBLIC_BRANCH" 2>/dev/null || true
 
-# 从 master 创建临时分支
+# 从当前分支创建临时分支
 git checkout -b "$PUBLIC_BRANCH"
 
 # 删除不公开的文件和目录
