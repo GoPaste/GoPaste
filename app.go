@@ -177,27 +177,30 @@ func (a *App) startup(ctx context.Context) {
 
 	bootProbeApp("startup: entering tray block")
 	if tray.CanToggle() {
-		// Windows：systray.Run 独立线程，支持 SetVisible 平滑切换
+		// Windows / macOS：支持平滑切换图标显隐，无需重启进程。
+		// macOS 走纯 cgo NSStatusItem（ObjC ARC 持有，Go GC 安全）。
+		bootProbeApp("startup: starting tray")
 		a.startTray()
+		bootProbeApp("startup: tray started")
 		if !s.ShowTrayIcon {
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 				tray.SetVisible(false)
 			}()
 		}
+		// macOS：Dock 图标点击呼出面板。
+		// go showPanel() 脱离主线程，避免 applicationShouldHandleReopen:
+		// 在主线程同步调 wailsruntime.* 导致死锁。
+		if runtime.GOOS == "darwin" {
+			tray.SetDockClickCallback(func() {
+				go a.showPanel()
+			})
+			bootProbeApp("startup: dock click callback installed")
+		}
 	} else {
-		// macOS：改用纯 cgo NSStatusItem，不再依赖 fyne.io/systray。
-		// tray.Start 内部对 darwin 会走 installStatusItem（ObjC ARC 持有所有
-		// ObjC 对象），彻底避免 Go GC 回收 ObjC target 的野指针崩溃。
-		// start 时机无需等 domReady——NSStatusItem 不依赖 WKWebView/主窗口。
-		bootProbeApp("startup: starting native NSStatusItem tray")
+		// Linux：fyne.io/systray，需等 domReady 再 flush start()
+		bootProbeApp("startup: tray deferred to domReady (linux)")
 		a.startTray()
-		bootProbeApp("startup: native tray started")
-		// Dock 图标点击也要响应（go showPanel 脱离主线程避免死锁）
-		tray.SetDockClickCallback(func() {
-			go a.showPanel()
-		})
-		bootProbeApp("startup: dock click callback installed")
 	}
 	bootProbeApp("startup: tray block done")
 

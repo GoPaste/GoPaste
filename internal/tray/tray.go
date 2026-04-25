@@ -191,9 +191,10 @@ func applyIcon() {
 // CanToggle 返回当前平台是否支持"不重启进程"地切换托盘图标显隐。
 //
 //   - Windows：true（通过 Shell_NotifyIcon NIM_DELETE/NIM_ADD 平滑切换）
-//   - macOS/Linux：false（fyne.io/systray 未暴露隐藏 API，需要重启）
+//   - macOS：true（通过 GoPasteStatusItemInstall/Uninstall 平滑切换）
+//   - Linux：false（fyne.io/systray 未暴露隐藏 API，需要重启）
 func CanToggle() bool {
-	return runtime.GOOS == "windows"
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 }
 
 // SetVisible 平滑切换托盘图标的可见性（不销毁 systray 消息循环）。

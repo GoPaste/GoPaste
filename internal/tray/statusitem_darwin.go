@@ -81,3 +81,14 @@ func setStatusItemIcon(iconPNG []byte, isTemplate bool) {
 	ptr := (*C.uchar)(unsafe.Pointer(&iconPNG[0]))
 	C.GoPasteStatusItemSetIcon(ptr, C.int(len(iconPNG)), t)
 }
+
+// showStatusItem 重新创建并显示菜单栏图标（幂等）。
+func showStatusItem() {
+	ptr := (*C.uchar)(unsafe.Pointer(&iconColorPNG[0]))
+	C.GoPasteStatusItemInstall(ptr, C.int(len(iconColorPNG)))
+}
+
+// hideStatusItem 从菜单栏移除图标（幂等）。
+func hideStatusItem() {
+	C.GoPasteStatusItemUninstall()
+}
