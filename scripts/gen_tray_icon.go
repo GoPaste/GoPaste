@@ -10,7 +10,7 @@
 // 本脚本绘制一个"P"形剪影：主干 + 右上半圆洞，尺寸 44×44，
 // 对应状态栏 22pt @2x。
 //
-// 运行方式：go run build/gen_tray_icon.go
+// 运行方式：go run scripts/gen_tray_icon.go
 // 输出：internal/tray/icon_template.png
 package main
 

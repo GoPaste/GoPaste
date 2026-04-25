@@ -23,7 +23,7 @@ GREEN := \033[32m
 RESET := \033[0m
 
 .PHONY: help dev build build-win build-mac build-linux build-all \
-        generate tidy test lint clean install-deps doctor
+        generate gen-icons gen-icon-template tidy test lint clean install-deps doctor
 
 # ============== 默认目标 ==============
 help: ## 显示帮助
@@ -93,6 +93,13 @@ build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac �
 # ============== 代码生成 ==============
 generate: ## 重新生成前端 TS 绑定 (wailsjs/)
 	$(WAILS) generate module
+
+gen-icons: ## 重新生成所有图标（彩色 appicon + 彩色/灰色菜单栏图标）
+	python3 scripts/gen_appicon.py
+	python3 scripts/gen_tray_icon_gray.py
+
+gen-icon-template: ## 重新生成模板图标（icon_template.png）
+	$(GO) run scripts/gen_tray_icon.go
 
 # ============== Go 工具链 ==============
 tidy: ## 整理 Go 依赖

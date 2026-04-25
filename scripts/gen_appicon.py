@@ -22,7 +22,7 @@ macOS Big Sur 之后所有应用图标遵循统一规范：
   1) build/appicon.src.png（如果存在，用它，不被覆盖）
   2) build/appicon.png 自身（首次运行时直接覆盖；后续会保留 src）
 
-运行：python3 build/gen_appicon.py
+运行：python3 scripts/gen_appicon.py
 """
 
 from __future__ import annotations
