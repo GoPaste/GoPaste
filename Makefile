@@ -82,8 +82,13 @@ build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
 	unset GOROOT; $(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
 
-build-linux: ## 构建 Linux (amd64)
-	$(XVFB) $(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
+build-linux: ## 构建 Linux (amd64) ⚠️ 需在 Linux 上运行，或使用 GitHub Actions
+	@if [ "$$(uname)" != "Linux" ]; then \
+		echo "$(CYAN)⚠ Linux 应用只能在 Linux 上原生构建（避免 CGO 交叉编译兼容问题）$(RESET)"; \
+		echo "  推荐使用 GitHub Actions: git tag v0.x.x && git push --tags"; \
+		exit 1; \
+	fi
+	$(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
 build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac 上单独构建或用 CI）
