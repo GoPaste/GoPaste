@@ -44,6 +44,7 @@ const form = reactive({
   silentStart: false,
   showTrayIcon: true,
   showTaskbarIcon: false,
+  trayIconStyle: 'color' as 'color' | 'gray',
   autoStart: false,
 })
 
@@ -118,6 +119,7 @@ async function load() {
   form.silentStart = !!s.silentStart
   form.showTrayIcon = s.showTrayIcon !== false
   form.showTaskbarIcon = !!s.showTaskbarIcon
+  form.trayIconStyle = (s.trayIconStyle === 'gray' ? 'gray' : 'color')
   form.autoStart = !!s.autoStart
   dataDir.value = await DataDir()
   try { appVersion.value = await GetAppVersion() } catch {}
@@ -142,6 +144,7 @@ async function autoSave() {
       silentStart: form.silentStart,
       showTrayIcon: form.showTrayIcon,
       showTaskbarIcon: form.showTaskbarIcon,
+      trayIconStyle: form.trayIconStyle,
       autoStart: form.autoStart,
     } as any)
     saveMsg.value = t('saved')
@@ -176,6 +179,7 @@ watchImmediate(() => form.resetFilterOnShow)
 watchImmediate(() => form.silentStart)
 watchImmediate(() => form.showTrayIcon)
 watchImmediate(() => form.showTaskbarIcon)
+watchImmediate(() => form.trayIconStyle)
 watchImmediate(() => form.autoStart)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
@@ -321,13 +325,32 @@ onMounted(load)
               <button :class="{ active: form.theme === 'light' }" @click="setTheme('light')">{{ t('light') }}</button>
             </div>
           </div>
+          <div class="card-row">
+            <span>{{ t('trayIconStyle') }}</span>
+            <div class="seg-ctrl seg-sm">
+              <button :class="{ active: form.trayIconStyle === 'color' }" @click="form.trayIconStyle = 'color'">{{ t('trayIconColor') }}</button>
+              <button :class="{ active: form.trayIconStyle === 'gray' }" @click="form.trayIconStyle = 'gray'">{{ t('trayIconGray') }}</button>
+            </div>
+          </div>
         </div>
 
         <div class="section-title">{{ t('updateSettings') }}</div>
         <div class="section-card">
-          <div class="card-row disabled">
+          <div class="card-row">
             <span>{{ t('autoCheckUpdate') }}</span>
             <span class="badge">{{ t('comingSoon') }}</span>
+          </div>
+          <div class="card-row">
+            <span>{{ t('checkUpdate') }}</span>
+            <div class="check-update-row">
+              <span class="check-update-msg" :class="{ 'has-update': updateHasNew }">
+                {{ updateMsg }}
+                <button v-if="updateHasNew && updateUrl" class="btn-link" @click="onOpenRelease">{{ t('download') }}</button>
+              </span>
+              <button class="btn-outline btn-sm" :disabled="updateChecking" @click="onCheckUpdate">
+                {{ updateChecking ? t('checking') : t('checkUpdate') }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -484,17 +507,6 @@ onMounted(load)
           <div class="link-row"><span class="link-label">{{ t('techStack') }}</span><span>Go · Vue 3 · Wails · SQLite</span></div>
           <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>MIT</span></div>
         </div>
-        <div class="about-update">
-          <button class="btn-outline" :disabled="updateChecking" @click="onCheckUpdate">
-            {{ updateChecking ? t('checking') : t('checkUpdate') }}
-          </button>
-          <span v-if="updateMsg" class="update-msg" :class="{ 'has-update': updateHasNew }">
-            {{ updateMsg }}
-            <button v-if="updateHasNew && updateUrl" class="btn-link" @click="onOpenRelease">
-              {{ t('download') }}
-            </button>
-          </span>
-        </div>
       </div>
     </main>
     </div>
@@ -614,6 +626,10 @@ onMounted(load)
   white-space: nowrap; flex-shrink: 0;
 }
 .btn-outline:hover { background: var(--bg-elevated); }
+.btn-outline.btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 5px; }
+.check-update-row { display: flex; align-items: center; gap: 8px; }
+.check-update-msg { font-size: 12px; color: var(--text-secondary); min-width: 80px; text-align: right; white-space: nowrap; }
+.check-update-msg.has-update { color: var(--warning); font-weight: 500; }
 
 .btn-danger {
   display: inline-flex; align-items: center; gap: 6px;
@@ -731,7 +747,7 @@ onMounted(load)
 .card-row .path {
   flex: 1; min-width: 0; margin-left: 10px; text-align: right;
   white-space: nowrap; overflow-x: auto; overflow-y: hidden;
-  font-size: 9px;
+  font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .desc-inline { font-size: 11px; color: var(--text-muted); margin: 0; }

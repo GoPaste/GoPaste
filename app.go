@@ -182,6 +182,10 @@ func (a *App) startup(ctx context.Context) {
 		bootProbeApp("startup: starting tray")
 		a.startTray()
 		bootProbeApp("startup: tray started")
+		// 启动时应用图标风格
+		if s.TrayIconStyle != "" {
+			tray.SetIconStyle(s.TrayIconStyle)
+		}
 		if !s.ShowTrayIcon {
 			go func() {
 				time.Sleep(500 * time.Millisecond)
@@ -952,6 +956,11 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 		} else {
 			a.stopTray()
 		}
+	}
+
+	// 菜单栏图标风格实时切换（仅 macOS）
+	if prev.TrayIconStyle != ns.TrayIconStyle {
+		tray.SetIconStyle(ns.TrayIconStyle)
 	}
 
 	// 开机自启实时同步：仅在状态变化时写 OS 自启配置，避免重复 I/O。
