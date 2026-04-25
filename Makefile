@@ -10,10 +10,6 @@ WAILS       := wails
 GO          := go
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 
-# 交叉编译工具链（Linux 宿主打 Windows 包时需要）
-WIN_CC      := x86_64-w64-mingw32-gcc
-WIN_CXX     := x86_64-w64-mingw32-g++
-
 # Wails 构建通用参数
 WAILS_FLAGS := -ldflags "$(LDFLAGS)"
 
@@ -60,9 +56,13 @@ else
 endif
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
 
-build-win: ## 构建 Windows (amd64)
-	CGO_ENABLED=1 CC=$(WIN_CC) CXX=$(WIN_CXX) \
-	$(XVFB) $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
+build-win: ## 构建 Windows (amd64) ⚠️ 需在 Windows 上运行，或使用 GitHub Actions
+	@if [ "$$(uname)" != "MINGW64_NT" ] && [ "$$(uname)" != "MSYS_NT" ] && [ "$$(expr substr $$(uname -s) 1 5)" != "MINGW" ] && [ "$$(uname -s)" != "Windows_NT" ]; then \
+		echo "$(CYAN)⚠ Windows 应用只能在 Windows 上原生构建（避免 CGO 交叉编译兼容问题）$(RESET)"; \
+		echo "  推荐使用 GitHub Actions: git tag v0.x.x && git push --tags"; \
+		exit 1; \
+	fi
+	$(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
 	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
 
 build-win-arm: ## 构建 Windows (arm64)
