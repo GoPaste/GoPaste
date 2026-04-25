@@ -18,15 +18,19 @@ jobs:
           - os: windows-latest
             platform: windows/amd64
             output: gopaste.exe
+            arch: x64
           - os: macos-latest
             platform: darwin/arm64
-            output: gopaste
+            output: GoPaste.app
+            arch: aarch64
           - os: macos-latest
             platform: darwin/amd64
-            output: gopaste
+            output: GoPaste.app
+            arch: x64
           - os: ubuntu-latest
             platform: linux/amd64
             output: gopaste
+            arch: x64
 
     runs-on: ${{ matrix.os }}
 
@@ -73,19 +77,53 @@ jobs:
 
       # 构建
       - name: Build
-        run: wails build -clean -platform ${{ matrix.platform }}
+        run: wails build -clean -platform ${{ matrix.platform }}${{ matrix.os == 'windows-latest' && ' -nsis' || '' }}
 
       # 列出产物目录（便于调试）
       - name: List build output
         shell: bash
         run: ls -la build/bin/ || true
 
+      # 解析版本号（去掉 v 前缀，workflow_dispatch 时用 dev）
+      - name: Set version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="dev"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      # 重命名产物为带版本号和架构的文件名
+      - name: Rename artifact
+        shell: bash
+        run: |
+          VERSION=${{ env.VERSION }}
+          cd build/bin
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            zip -r "GoPaste_${VERSION}_${{ matrix.arch }}.zip" "${{ matrix.output }}"
+            echo "ARTIFACT=GoPaste_${VERSION}_${{ matrix.arch }}.zip" >> $GITHUB_ENV
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            mv "${{ matrix.output }}" "GoPaste_${VERSION}_${{ matrix.arch }}.exe"
+            echo "ARTIFACT=GoPaste_${VERSION}_${{ matrix.arch }}.exe" >> $GITHUB_ENV
+            # NSIS 安装包（如果存在）
+            INSTALLER="gopaste-amd64-installer.exe"
+            if [ -f "$INSTALLER" ]; then
+              mv "$INSTALLER" "GoPaste_${VERSION}_${{ matrix.arch }}-setup.exe"
+              echo "INSTALLER=GoPaste_${VERSION}_${{ matrix.arch }}-setup.exe" >> $GITHUB_ENV
+            fi
+          else
+            mv "${{ matrix.output }}" "GoPaste_${VERSION}_${{ matrix.arch }}"
+            echo "ARTIFACT=GoPaste_${VERSION}_${{ matrix.arch }}" >> $GITHUB_ENV
+          fi
+
       # 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gopaste-${{ matrix.platform == 'windows/amd64' && 'windows-amd64' || matrix.platform == 'darwin/arm64' && 'macos-arm64' || matrix.platform == 'darwin/amd64' && 'macos-amd64' || 'linux-amd64' }}
-          path: build/bin/${{ matrix.output }}
+          name: ${{ env.ARTIFACT }}
+          path: build/bin/${{ env.ARTIFACT }}
           if-no-files-found: warn
 
       # 发布到 Release（仅 tag 触发时）
@@ -93,4 +131,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/bin/${{ matrix.output }}
+          files: |
+            build/bin/${{ env.ARTIFACT }}
+            ${{ env.INSTALLER && format('build/bin/{0}', env.INSTALLER) || '' }}
