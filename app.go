@@ -558,9 +558,14 @@ func (a *App) convertMainWindowToPanelWithRetry() {
 	bootProbeApp("convertMainWindowToPanelWithRetry: done")
 }
 
-// applyTaskbarIconWithRetry 在启动阶段窗口 HWND 就绪前轮询，找到后应用任务栏显隐设置。
-// Windows 专用；其他平台 window.FindMainWindow 返回 0，直接退出。
+// applyTaskbarIconWithRetry 在启动阶段应用任务栏/Dock 显隐设置。
+// Windows：需要轮询等 HWND 就绪；macOS：直接调（不需要 HWND）。
 func (a *App) applyTaskbarIconWithRetry() {
+	if runtime.GOOS == "darwin" {
+		// macOS：setActivationPolicy 不依赖 HWND，直接应用。
+		a.applyTaskbarIcon(0)
+		return
+	}
 	if runtime.GOOS != "windows" {
 		return
 	}
@@ -575,16 +580,19 @@ func (a *App) applyTaskbarIconWithRetry() {
 	a.log.Warn("applyTaskbarIcon: HWND not found within 5s")
 }
 
-// applyTaskbarIcon 按当前设置把主窗口从任务栏显/隐。
+// applyTaskbarIcon 按当前设置把主窗口从任务栏/Dock 显/隐。
+// macOS 上 hwnd 忽略（SetTaskbarVisible 内部用 NSApp）。
 func (a *App) applyTaskbarIcon(hwnd uintptr) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
 		return
 	}
-	if hwnd == 0 {
-		hwnd = window.FindMainWindow("GoPaste")
-	}
-	if hwnd == 0 {
-		return
+	if runtime.GOOS == "windows" {
+		if hwnd == 0 {
+			hwnd = window.FindMainWindow("GoPaste")
+		}
+		if hwnd == 0 {
+			return
+		}
 	}
 	s := settings.Default()
 	if a.settings != nil {
