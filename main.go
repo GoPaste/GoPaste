@@ -17,7 +17,7 @@ import (
 
 	"gopaste/internal/appguard"
 	"gopaste/internal/config"
-	"gopaste/internal/crashlog"
+	"gopaste/internal/logger"
 	"gopaste/internal/settings"
 	"gopaste/internal/window"
 )
@@ -55,7 +55,7 @@ func main() {
 	// 接到固定文件，保证以后任何 panic 都能在该文件里看到完整 Go 栈。
 	// 注意：用 dup2 替换 fd2，而不是只覆盖 os.Stderr——Go runtime 写 panic
 	// 的是底层 fd2（write(2,...)），不是 os.Stderr 这个 *File。
-	crashlog.RedirectStderr()
+	logger.RedirectStderr()
 
 	// 静默死亡诊断：
 	//  - SIGBUS/SIGSEGV/SIGILL/SIGFPE/SIGABRT：CGo / AppKit 内部断言失败、野指针、
