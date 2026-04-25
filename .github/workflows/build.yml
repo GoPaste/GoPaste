@@ -73,6 +73,7 @@ jobs:
 
       # 列出产物目录（便于调试）
       - name: List build output
+        shell: bash
         run: ls -la build/bin/ || true
 
       # 上传产物
