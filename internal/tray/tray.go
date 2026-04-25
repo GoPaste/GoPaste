@@ -109,10 +109,8 @@ func Start(cb Callbacks) (cleanup func()) {
 	started = true
 	startedMu.Unlock()
 
-	if runtime.GOOS == "darwin" {
-		// macOS：纯 cgo NSStatusItem，用彩色 appicon（与 Dock 图标一致）
-		end := installStatusItem(cb, iconColorPNG)
-		return end
+	if cleanup, ok := startPlatform(cb); ok {
+		return cleanup
 	}
 
 	// Windows / Linux：继续用 fyne.io/systray
@@ -233,11 +231,5 @@ func SetIconStyle(style string) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	currentIconStyle = style
-	switch style {
-	case "gray":
-		setStatusItemIcon(iconGrayPNG, false)
-	default: // "color"
-		setStatusItemIcon(iconColorPNG, false)
-	}
+	setIconStylePlatform(style)
 }
