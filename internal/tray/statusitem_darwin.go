@@ -82,10 +82,17 @@ func setStatusItemIcon(iconPNG []byte, isTemplate bool) {
 	C.GoPasteStatusItemSetIcon(ptr, C.int(len(iconPNG)), t)
 }
 
-// showStatusItem 重新创建并显示菜单栏图标（幂等）。
+// currentIconStyle 记录当前图标风格，showStatusItem 重建时使用。
+var currentIconStyle = "color"
+
+// showStatusItem 重新创建并显示菜单栏图标（幂等），使用当前图标风格。
 func showStatusItem() {
-	ptr := (*C.uchar)(unsafe.Pointer(&iconColorPNG[0]))
-	C.GoPasteStatusItemInstall(ptr, C.int(len(iconColorPNG)))
+	icon := iconColorPNG
+	if currentIconStyle == "gray" {
+		icon = iconGrayPNG
+	}
+	ptr := (*C.uchar)(unsafe.Pointer(&icon[0]))
+	C.GoPasteStatusItemInstall(ptr, C.int(len(icon)))
 }
 
 // hideStatusItem 从菜单栏移除图标（幂等）。

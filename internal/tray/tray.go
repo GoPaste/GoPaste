@@ -82,11 +82,16 @@ var iconTemplatePNG []byte
 //   - 由 build/gen_appicon.py 从 build/appicon.src.png 缩放生成；
 //   - 尺寸 44×44（22pt @2x），自带圆角；
 //   - 走 SetIcon（非 template），系统不会再染色，所见即所得。
-// 代价：dark mode 下不会自动反色。这是用户主动选择的取舍
-// （希望菜单栏图标和 dock 图标完全一致），不是 bug。
 //
 //go:embed icon_color.png
 var iconColorPNG []byte
+
+// iconGrayPNG 灰色系 macOS 状态栏图标：
+//   - 由 build/appicon.src.png 灰度转换生成；
+//   - 尺寸 44×44，适合不需要彩色强调色的场景。
+//
+//go:embed icon_gray.png
+var iconGrayPNG []byte
 
 // Start 启动系统托盘。
 //
@@ -218,5 +223,21 @@ func SetVisible(show bool) {
 	if show {
 		applyIcon()
 		systray.SetTooltip("GoPaste · 剪切板管理")
+	}
+}
+
+// SetIconStyle 切换菜单栏图标风格。
+// style: "color"（彩色）| "gray"（灰色）。
+// 仅 macOS 生效；其他平台为 no-op。
+func SetIconStyle(style string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	currentIconStyle = style
+	switch style {
+	case "gray":
+		setStatusItemIcon(iconGrayPNG, false)
+	default: // "color"
+		setStatusItemIcon(iconColorPNG, false)
 	}
 }
