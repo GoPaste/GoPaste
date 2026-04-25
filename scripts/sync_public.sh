@@ -39,7 +39,7 @@ git branch -D "$PUBLIC_BRANCH" 2>/dev/null || true
 git checkout -b "$PUBLIC_BRANCH"
 
 # 删除不公开的文件和目录
-git rm -r --cached docs/ scripts/ Makefile 2>/dev/null || true
+git rm -r --cached docs/ scripts/ Makefile .codebuddy/ 2>/dev/null || true
 git commit -m "chore: remove private files for public release" --allow-empty
 
 # 推送到 b 仓库的 master 分支
