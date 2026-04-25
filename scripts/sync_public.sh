@@ -35,12 +35,15 @@ trap cleanup ERR
 # 删除旧的临时分支（如果存在）
 git branch -D "$PUBLIC_BRANCH" 2>/dev/null || true
 
-# 从当前分支创建临时分支
-git checkout -b "$PUBLIC_BRANCH"
+# 创建无历史的孤立分支
+git checkout --orphan "$PUBLIC_BRANCH"
 
 # 删除不公开的文件和目录
-git rm -r --cached docs/ scripts/ Makefile .codebuddy/ 2>/dev/null || true
-git commit -m "chore: remove private files for public release" --allow-empty
+git rm -rf docs/ scripts/ Makefile .codebuddy/ 2>/dev/null || true
+
+# 提交当前快照（无任何历史记录）
+git add -A
+git commit -m "release: public snapshot"
 
 # 推送到 b 仓库的 master 分支
 git push public "$PUBLIC_BRANCH:master" --force
