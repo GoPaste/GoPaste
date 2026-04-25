@@ -41,15 +41,17 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       # Linux 依赖
       - name: Install Linux Dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libx11-dev libxtst-dev libxrandr-dev
+          sudo apt-get install -y libgtk-3-dev \
+            libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev \
+            libx11-dev libxtst-dev libxrandr-dev \
+            nsis || true
 
       # 安装 Wails CLI
       - name: Install Wails
@@ -59,12 +61,17 @@ jobs:
       - name: Build
         run: wails build -clean -platform ${{ matrix.platform }}
 
+      # 列出产物目录（便于调试）
+      - name: List build output
+        run: ls -la build/bin/ || true
+
       # 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: gopaste-${{ matrix.platform == 'windows/amd64' && 'windows-amd64' || matrix.platform == 'darwin/arm64' && 'macos-arm64' || matrix.platform == 'darwin/amd64' && 'macos-amd64' || 'linux-amd64' }}
           path: build/bin/${{ matrix.output }}
+          if-no-files-found: warn
 
       # 发布到 Release（仅 tag 触发时）
       - name: Upload to Release
