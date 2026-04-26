@@ -224,12 +224,17 @@ jobs:
           CGO_ENABLED: '1'
           CC: ${{ env.MINGW32_CC }}
           CXX: ${{ env.MINGW32_CXX }}
+          # MSYS2 默认装的是 gcc 15+，某些 warning 在新 gcc 下会升级为 error。
+          # Go 默认 CGO_CFLAGS 带 -Wall -Werror，清空后仅保留必要优化参数。
+          CGO_CFLAGS: '-O2 -g'
+          CGO_CXXFLAGS: '-O2 -g'
         run: |
           set -euxo pipefail
           echo "CC=$CC"
           echo "CXX=$CXX"
           "$CC" --version
-          wails build -clean -platform ${{ matrix.platform }}
+          # 使用 -v 2 让 wails 打印子命令详细输出，便于定位 cgo 失败的真实原因
+          wails build -clean -platform ${{ matrix.platform }} -v 2
 
       - name: Build (no NSIS, no CGO)
         if: matrix.nsis != 'yes' && matrix.platform != 'windows/386'
