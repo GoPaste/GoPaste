@@ -103,15 +103,24 @@ jobs:
         if: matrix.nsis == 'yes'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           # GitHub Windows runner 默认未安装 NSIS，wails 找不到 makensis 会静默跳过 NSIS 打包
           choco install nsis -y --no-progress
-          # 把 NSIS 加入 PATH，使后续步骤的 bash 能调用 makensis
+          # 把 NSIS 加入 PATH，使后续步骤的 wails/bash 能调用 makensis
           $nsisPath = 'C:\Program Files (x86)\NSIS'
-          if (Test-Path $nsisPath) {
-            echo $nsisPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            Write-Host "NSIS added to PATH: $nsisPath"
+          if (-not (Test-Path (Join-Path $nsisPath 'makensis.exe'))) {
+            # 有些 chocolatey 版本装到 C:\Program Files\NSIS
+            $nsisPath = 'C:\Program Files\NSIS'
           }
-          & "$nsisPath\makensis.exe" /VERSION
+          if (-not (Test-Path (Join-Path $nsisPath 'makensis.exe'))) {
+            Write-Host "Searching for makensis.exe ..."
+            Get-ChildItem -Path 'C:\','D:\' -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName
+            throw "makensis.exe not found"
+          }
+          # 用 ASCII 追加，避免 BOM 导致 GitHub Actions 解析失败
+          Add-Content -Path $env:GITHUB_PATH -Value $nsisPath -Encoding ASCII
+          Write-Host "NSIS added to PATH: $nsisPath"
+          & (Join-Path $nsisPath 'makensis.exe') /VERSION
 
       # ---------- Windows 32 位编译器：mingw-w64 i686 ----------
       # 项目依赖 github.com/emersion/go-autostart 在 windows 平台使用 cgo，
@@ -130,19 +139,34 @@ jobs:
 
       - name: Configure 32-bit toolchain (Windows 32-bit)
         if: matrix.platform == 'windows/386'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euxo pipefail
-          # 找到 MSYS2 安装的 mingw32 工具目录
-          for p in "/d/a/_temp/msys64/mingw32/bin" "/c/msys64/mingw32/bin"; do
-            if [ -d "$p" ]; then
-              echo "$p" >> "$GITHUB_PATH"
-              echo "Added to PATH: $p"
-              # 验证 i686 gcc 可用
-              "$p/i686-w64-mingw32-gcc.exe" --version || "$p/gcc.exe" --version
+          $ErrorActionPreference = 'Stop'
+          # 候选安装目录（setup-msys2 可能放在 runner 的 _temp 下，也可能在 C:\msys64）
+          $candidates = @(
+            "$env:RUNNER_TEMP\msys64\mingw32\bin",
+            'D:\a\_temp\msys64\mingw32\bin',
+            'C:\msys64\mingw32\bin'
+          )
+          $found = $null
+          foreach ($p in $candidates) {
+            if (Test-Path (Join-Path $p 'i686-w64-mingw32-gcc.exe')) {
+              $found = $p
               break
-            fi
-          done
+            }
+          }
+          if (-not $found) {
+            Write-Host "Candidate paths checked:"
+            $candidates | ForEach-Object { Write-Host "  $_ (exists=$(Test-Path $_))" }
+            Write-Host "Searching whole disk for i686-w64-mingw32-gcc.exe ..."
+            Get-ChildItem -Path C:\,D:\ -Filter 'i686-w64-mingw32-gcc.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName
+            throw "i686-w64-mingw32-gcc.exe not found in any candidate path"
+          }
+          Write-Host "Using MinGW32 path: $found"
+          # 追加到 GITHUB_PATH（Windows 原生路径，保证 Go 的 cmd/go LookPath 能解析）
+          Add-Content -Path $env:GITHUB_PATH -Value $found -Encoding ASCII
+          # 验证
+          & (Join-Path $found 'i686-w64-mingw32-gcc.exe') --version
 
       # ---------- Wails CLI ----------
       - name: Install Wails
@@ -176,6 +200,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # 诊断：确认 makensis 在 PATH 中，否则 wails 会静默跳过 NSIS 打包
+          which makensis
+          makensis /VERSION
           wails build -clean -platform ${{ matrix.platform }} -nsis
 
       # windows/386 需要 CGO + 32 位工具链（go-autostart 依赖 cgo）
