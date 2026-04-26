@@ -163,10 +163,18 @@ jobs:
             throw "i686-w64-mingw32-gcc.exe not found in any candidate path"
           }
           Write-Host "Using MinGW32 path: $found"
-          # 追加到 GITHUB_PATH（Windows 原生路径，保证 Go 的 cmd/go LookPath 能解析）
-          Add-Content -Path $env:GITHUB_PATH -Value $found -Encoding ASCII
+          # 重要：不能把 mingw32\bin 加入 PATH！否则 bindings 阶段 (wails 用主机 Go) 会优先找到
+          # 这里的 32 位 gcc.exe，导致用 32 位 CC 编 64 位 runtime/cgo，报错：
+          #   cc1.exe: sorry, unimplemented: 64-bit mode not compiled in
+          # 正确做法：只把 CC 的 *绝对路径* 导出到 GITHUB_ENV，让 wails build 阶段使用；
+          # bindings 阶段 wails 会主动 RemoveEnv("CC")（见 wails bindings.go line 61），
+          # 于是 bindings 阶段 go 会 fallback 到 PATH 中默认的 64 位 gcc。
+          $gccPath = (Join-Path $found 'i686-w64-mingw32-gcc.exe')
+          $gxxPath = (Join-Path $found 'i686-w64-mingw32-g++.exe')
+          Add-Content -Path $env:GITHUB_ENV -Value "MINGW32_CC=$gccPath" -Encoding ASCII
+          Add-Content -Path $env:GITHUB_ENV -Value "MINGW32_CXX=$gxxPath" -Encoding ASCII
           # 验证
-          & (Join-Path $found 'i686-w64-mingw32-gcc.exe') --version
+          & $gccPath --version
 
       # ---------- Wails CLI ----------
       - name: Install Wails
@@ -200,9 +208,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # 诊断：确认 makensis 在 PATH 中，否则 wails 会静默跳过 NSIS 打包
-          which makensis
-          makensis /VERSION
+          # 诊断：确认 makensis 在 PATH 中（wails 找不到会静默跳过 NSIS 打包）
+          # 注意：bash 下 makensis 的 /VERSION 参数会被 git-bash 错误地转成文件路径，
+          # 所以这里用 command -v 而不是 makensis /VERSION。
+          command -v makensis
           wails build -clean -platform ${{ matrix.platform }} -nsis
 
       # windows/386 需要 CGO + 32 位工具链（go-autostart 依赖 cgo）
@@ -210,16 +219,16 @@ jobs:
         if: matrix.platform == 'windows/386'
         shell: bash
         env:
+          # 仅设 CGO_ENABLED 和 CC；GOOS/GOARCH 由 wails 根据 -platform 自动设置，
+          # 主动覆盖反而会污染 bindings 子进程。
           CGO_ENABLED: '1'
-          GOOS: windows
-          GOARCH: '386'
-          CC: i686-w64-mingw32-gcc
-          CXX: i686-w64-mingw32-g++
+          CC: ${{ env.MINGW32_CC }}
+          CXX: ${{ env.MINGW32_CXX }}
         run: |
           set -euxo pipefail
-          which i686-w64-mingw32-gcc || true
-          i686-w64-mingw32-gcc --version || true
-          go env GOOS GOARCH CGO_ENABLED CC
+          echo "CC=$CC"
+          echo "CXX=$CXX"
+          "$CC" --version
           wails build -clean -platform ${{ matrix.platform }}
 
       - name: Build (no NSIS, no CGO)
