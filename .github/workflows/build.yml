@@ -43,7 +43,7 @@ jobs:
             output: gopaste.exe
             os_arch: windows_x64
             kind: win
-            nsis: true
+            nsis: 'yes'
           # x86 (32 位)：仅输出 portable（Wails 官方 NSIS 模板不支持 386）
           - id: win-x86
             os: windows-latest
@@ -51,7 +51,7 @@ jobs:
             output: gopaste.exe
             os_arch: windows_x86
             kind: win
-            nsis: false
+            nsis: 'no'
 
           # ===== Linux =====
           - id: linux-x64
@@ -98,6 +98,21 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install create-dmg
 
+      # ---------- Windows 依赖：NSIS（仅需要打安装包的 job）----------
+      - name: Install NSIS (Windows)
+        if: matrix.nsis == 'yes'
+        shell: pwsh
+        run: |
+          # GitHub Windows runner 默认未安装 NSIS，wails 找不到 makensis 会静默跳过 NSIS 打包
+          choco install nsis -y --no-progress
+          # 把 NSIS 加入 PATH，使后续步骤的 bash 能调用 makensis
+          $nsisPath = 'C:\Program Files (x86)\NSIS'
+          if (Test-Path $nsisPath) {
+            echo $nsisPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            Write-Host "NSIS added to PATH: $nsisPath"
+          }
+          & "$nsisPath\makensis.exe" /VERSION
+
       # ---------- Wails CLI ----------
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -121,20 +136,31 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       # ---------- 构建 ----------
-      - name: Build
+      - name: Wails version
+        shell: bash
+        run: wails version
+
+      - name: Build (with NSIS)
+        if: matrix.nsis == 'yes'
         shell: bash
         run: |
-          set -e
-          # Windows x64 加 -nsis 同时输出 portable exe + 安装包；其他平台只构建主体
-          EXTRA=""
-          if [ "${{ matrix.nsis }}" = "true" ]; then
-            EXTRA="-nsis"
-          fi
-          wails build -clean -platform ${{ matrix.platform }} $EXTRA
+          set -euxo pipefail
+          wails build -clean -platform ${{ matrix.platform }} -nsis
+
+      - name: Build (no NSIS)
+        if: matrix.nsis != 'yes'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wails build -clean -platform ${{ matrix.platform }}
 
       - name: List build output
         shell: bash
-        run: ls -la build/bin/ || true
+        run: |
+          echo "--- build/bin ---"
+          ls -la build/bin/ || true
+          echo "--- build/bin/* (recursive) ---"
+          find build/bin -maxdepth 3 -type f 2>/dev/null || true
 
       # ---------- 打包产物 ----------
       - name: Package macOS (dmg)
@@ -169,7 +195,7 @@ jobs:
           mv "${{ matrix.output }}" "$PORTABLE"
           echo "PORTABLE=$PORTABLE" >> $GITHUB_ENV
 
-          if [ "${{ matrix.nsis }}" = "true" ]; then
+          if [ "${{ matrix.nsis }}" = "yes" ]; then
             # Wails 默认输出 gopaste-amd64-installer.exe / gopaste-arm64-installer.exe
             INSTALLER_SRC=""
             for f in gopaste-amd64-installer.exe gopaste-arm64-installer.exe gopaste-*-installer.exe; do
