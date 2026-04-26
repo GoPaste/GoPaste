@@ -233,7 +233,12 @@ jobs:
           echo "CC=$CC"
           echo "CXX=$CXX"
           "$CC" --version
-          # 使用 -v 2 让 wails 打印子命令详细输出，便于定位 cgo 失败的真实原因
+
+          # 诊断：先单独尝试编译 runtime/cgo 包，看具体 cgo 错误
+          echo "=== Diagnostic: cross-compile runtime/cgo to surface hidden cgo error ==="
+          GOOS=windows GOARCH=386 go build -x -v -o /tmp/rtcgo-probe.exe runtime/cgo 2>&1 | tail -80 || true
+
+          # 正式构建
           wails build -clean -platform ${{ matrix.platform }} -v 2
 
       - name: Build (no NSIS, no CGO)
