@@ -113,6 +113,38 @@ jobs:
           }
           & "$nsisPath\makensis.exe" /VERSION
 
+      # ---------- Windows 32 位编译器：mingw-w64 i686 ----------
+      # 项目依赖 github.com/emersion/go-autostart 在 windows 平台使用 cgo，
+      # 编译 windows/386 必须使用 32 位 mingw 工具链 + CGO_ENABLED=1。
+      - name: Setup MSYS2 (Windows 32-bit)
+        if: matrix.platform == 'windows/386'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          install: >-
+            mingw-w64-i686-gcc
+          path-type: inherit
+          update: false
+
+      - name: Configure 32-bit toolchain (Windows 32-bit)
+        if: matrix.platform == 'windows/386'
+        shell: pwsh
+        run: |
+          # 把 MINGW32 的 bin 目录加到 PATH 头部，使 i686-w64-mingw32-gcc 可调用
+          $mingw32 = 'D:\a\_temp\msys64\mingw32\bin'
+          if (-not (Test-Path $mingw32)) { $mingw32 = 'C:\msys64\mingw32\bin' }
+          if (Test-Path $mingw32) {
+            echo $mingw32 | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            Write-Host "Added to PATH: $mingw32"
+          } else {
+            Write-Error "mingw32 bin dir not found"
+            exit 1
+          }
+          # 设置 CGO 相关环境变量供 wails build 使用
+          echo "CGO_ENABLED=1"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CC=i686-w64-mingw32-gcc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CXX=i686-w64-mingw32-g++"| Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       # ---------- Wails CLI ----------
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
