@@ -122,60 +122,6 @@ jobs:
           Write-Host "NSIS added to PATH: $nsisPath"
           & (Join-Path $nsisPath 'makensis.exe') /VERSION
 
-      # ---------- Windows 32 位编译器：mingw-w64 i686 ----------
-      # 项目依赖 github.com/emersion/go-autostart 在 windows 平台使用 cgo，
-      # 编译 windows/386 必须使用 32 位 mingw 工具链 + CGO_ENABLED=1。
-      # 重要：wails v2 在 windows 平台不会自动设置 CGO_ENABLED=1（见 wails base.go line 305），
-      # 需要我们手动在 build 命令前导出环境变量。
-      - name: Setup MSYS2 (Windows 32-bit)
-        if: matrix.platform == 'windows/386'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          install: >-
-            mingw-w64-i686-gcc
-          path-type: inherit
-          update: false
-
-      - name: Configure 32-bit toolchain (Windows 32-bit)
-        if: matrix.platform == 'windows/386'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # 候选安装目录（setup-msys2 可能放在 runner 的 _temp 下，也可能在 C:\msys64）
-          $candidates = @(
-            "$env:RUNNER_TEMP\msys64\mingw32\bin",
-            'D:\a\_temp\msys64\mingw32\bin',
-            'C:\msys64\mingw32\bin'
-          )
-          $found = $null
-          foreach ($p in $candidates) {
-            if (Test-Path (Join-Path $p 'i686-w64-mingw32-gcc.exe')) {
-              $found = $p
-              break
-            }
-          }
-          if (-not $found) {
-            Write-Host "Candidate paths checked:"
-            $candidates | ForEach-Object { Write-Host "  $_ (exists=$(Test-Path $_))" }
-            Write-Host "Searching whole disk for i686-w64-mingw32-gcc.exe ..."
-            Get-ChildItem -Path C:\,D:\ -Filter 'i686-w64-mingw32-gcc.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName
-            throw "i686-w64-mingw32-gcc.exe not found in any candidate path"
-          }
-          Write-Host "Using MinGW32 path: $found"
-          # 重要：不能把 mingw32\bin 加入 PATH！否则 bindings 阶段 (wails 用主机 Go) 会优先找到
-          # 这里的 32 位 gcc.exe，导致用 32 位 CC 编 64 位 runtime/cgo，报错：
-          #   cc1.exe: sorry, unimplemented: 64-bit mode not compiled in
-          # 正确做法：只把 CC 的 *绝对路径* 导出到 GITHUB_ENV，让 wails build 阶段使用；
-          # bindings 阶段 wails 会主动 RemoveEnv("CC")（见 wails bindings.go line 61），
-          # 于是 bindings 阶段 go 会 fallback 到 PATH 中默认的 64 位 gcc。
-          $gccPath = (Join-Path $found 'i686-w64-mingw32-gcc.exe')
-          $gxxPath = (Join-Path $found 'i686-w64-mingw32-g++.exe')
-          Add-Content -Path $env:GITHUB_ENV -Value "MINGW32_CC=$gccPath" -Encoding ASCII
-          Add-Content -Path $env:GITHUB_ENV -Value "MINGW32_CXX=$gxxPath" -Encoding ASCII
-          # 验证
-          & $gccPath --version
-
       # ---------- Wails CLI ----------
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -208,59 +154,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # 诊断：确认 makensis 在 PATH 中（wails 找不到会静默跳过 NSIS 打包）
-          # 注意：bash 下 makensis 的 /VERSION 参数会被 git-bash 错误地转成文件路径，
-          # 所以这里用 command -v 而不是 makensis /VERSION。
           command -v makensis
           wails build -clean -platform ${{ matrix.platform }} -nsis
 
-      # windows/386 需要 CGO + 32 位工具链（go-autostart 依赖 cgo）
-      # 关键：不能用 shell: bash (git-bash)，因为 git-bash 会把自带的
-      # C:\Program Files\Git\mingw64\bin 放在 PATH 最前面，里面有 64 位 gcc.exe，
-      # cgo 工具内部调用 gcc helper 时会命中它 → 与 32 位目标不匹配 → cgo.exe exit 2。
-      # 改用 pwsh，并手动清理 PATH 中的 64 位 mingw。
-      - name: Build (Windows 32-bit, CGO)
-        if: matrix.platform == 'windows/386'
-        shell: pwsh
-        env:
-          CGO_ENABLED: '1'
-          CC: ${{ env.MINGW32_CC }}
-          CXX: ${{ env.MINGW32_CXX }}
-          CGO_CFLAGS: '-O2 -g'
-          CGO_CXXFLAGS: '-O2 -g'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host "CC=$env:CC"
-          Write-Host "CXX=$env:CXX"
-          & $env:CC --version
-
-          # 清洗 PATH：移除所有 64 位 mingw 目录（含 git-bash 自带的）
-          $mingw32Dir = Split-Path $env:CC -Parent
-          $cleaned = ($env:PATH -split ';') | Where-Object {
-            $_ -and
-            $_ -notmatch '(?i)\\mingw64\\bin$' -and
-            $_ -notmatch '(?i)\\Git\\mingw64\\bin$' -and
-            $_ -notmatch '(?i)\\Git\\usr\\bin$'
-          }
-          # 把 32 位 mingw 目录放到最前
-          $env:PATH = ($mingw32Dir + ';' + ($cleaned -join ';'))
-          Write-Host "=== Cleaned PATH (head) ==="
-          $env:PATH.Split(';') | Select-Object -First 10
-
-          # 诊断：先单独 cross-compile runtime/cgo，暴露真实错误
-          Write-Host "=== Diagnostic: cross-compile runtime/cgo ==="
-          $env:GOOS = 'windows'
-          $env:GOARCH = '386'
-          & go build -x -v -o $env:TEMP\rtcgo-probe.exe runtime/cgo 2>&1 | Select-Object -Last 80
-          Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
-
-          # 正式构建
-          Write-Host "=== wails build ==="
-          & wails build -clean -platform ${{ matrix.platform }} -v 2
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build (no NSIS, no CGO)
-        if: matrix.nsis != 'yes' && matrix.platform != 'windows/386'
+      - name: Build
+        if: matrix.nsis != 'yes'
         shell: bash
         run: |
           set -euxo pipefail
