@@ -215,31 +215,49 @@ jobs:
           wails build -clean -platform ${{ matrix.platform }} -nsis
 
       # windows/386 需要 CGO + 32 位工具链（go-autostart 依赖 cgo）
+      # 关键：不能用 shell: bash (git-bash)，因为 git-bash 会把自带的
+      # C:\Program Files\Git\mingw64\bin 放在 PATH 最前面，里面有 64 位 gcc.exe，
+      # cgo 工具内部调用 gcc helper 时会命中它 → 与 32 位目标不匹配 → cgo.exe exit 2。
+      # 改用 pwsh，并手动清理 PATH 中的 64 位 mingw。
       - name: Build (Windows 32-bit, CGO)
         if: matrix.platform == 'windows/386'
-        shell: bash
+        shell: pwsh
         env:
-          # 仅设 CGO_ENABLED 和 CC；GOOS/GOARCH 由 wails 根据 -platform 自动设置，
-          # 主动覆盖反而会污染 bindings 子进程。
           CGO_ENABLED: '1'
           CC: ${{ env.MINGW32_CC }}
           CXX: ${{ env.MINGW32_CXX }}
-          # MSYS2 默认装的是 gcc 15+，某些 warning 在新 gcc 下会升级为 error。
-          # Go 默认 CGO_CFLAGS 带 -Wall -Werror，清空后仅保留必要优化参数。
           CGO_CFLAGS: '-O2 -g'
           CGO_CXXFLAGS: '-O2 -g'
         run: |
-          set -euxo pipefail
-          echo "CC=$CC"
-          echo "CXX=$CXX"
-          "$CC" --version
+          $ErrorActionPreference = 'Stop'
+          Write-Host "CC=$env:CC"
+          Write-Host "CXX=$env:CXX"
+          & $env:CC --version
 
-          # 诊断：先单独尝试编译 runtime/cgo 包，看具体 cgo 错误
-          echo "=== Diagnostic: cross-compile runtime/cgo to surface hidden cgo error ==="
-          GOOS=windows GOARCH=386 go build -x -v -o /tmp/rtcgo-probe.exe runtime/cgo 2>&1 | tail -80 || true
+          # 清洗 PATH：移除所有 64 位 mingw 目录（含 git-bash 自带的）
+          $mingw32Dir = Split-Path $env:CC -Parent
+          $cleaned = ($env:PATH -split ';') | Where-Object {
+            $_ -and
+            $_ -notmatch '(?i)\\mingw64\\bin$' -and
+            $_ -notmatch '(?i)\\Git\\mingw64\\bin$' -and
+            $_ -notmatch '(?i)\\Git\\usr\\bin$'
+          }
+          # 把 32 位 mingw 目录放到最前
+          $env:PATH = ($mingw32Dir + ';' + ($cleaned -join ';'))
+          Write-Host "=== Cleaned PATH (head) ==="
+          $env:PATH.Split(';') | Select-Object -First 10
+
+          # 诊断：先单独 cross-compile runtime/cgo，暴露真实错误
+          Write-Host "=== Diagnostic: cross-compile runtime/cgo ==="
+          $env:GOOS = 'windows'
+          $env:GOARCH = '386'
+          & go build -x -v -o $env:TEMP\rtcgo-probe.exe runtime/cgo 2>&1 | Select-Object -Last 80
+          Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
 
           # 正式构建
-          wails build -clean -platform ${{ matrix.platform }} -v 2
+          Write-Host "=== wails build ==="
+          & wails build -clean -platform ${{ matrix.platform }} -v 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build (no NSIS, no CGO)
         if: matrix.nsis != 'yes' && matrix.platform != 'windows/386'
