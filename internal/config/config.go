@@ -1,4 +1,4 @@
-// Package config 管理 gopaste 的数据目录与运行配置。
+// Package config 管理 GoPaste 的数据目录与运行配置。
 package config
 
 import (
@@ -7,16 +7,16 @@ import (
 )
 
 // AppName 数据目录名。
-const AppName = "gopaste"
+const AppName = "GoPaste"
 
 // Paths 运行期路径集合。
 type Paths struct {
-	Root     string // ~/.gopaste
-	DB       string // ~/.gopaste/gopaste.db
-	Images   string // ~/.gopaste/images
-	Key      string // ~/.gopaste/key.hex
-	Settings string // ~/.gopaste/settings.json
-	Lock     string // ~/.gopaste/.lock (单实例)
+	Root     string // ~/.GoPaste
+	DB       string // ~/.GoPaste/gopaste.db
+	Images   string // ~/.GoPaste/images
+	Key      string // ~/.GoPaste/key.hex
+	Settings string // ~/.GoPaste/settings.json
+	Lock     string // ~/.GoPaste/.lock (单实例)
 }
 
 // ResolvePaths 计算用户数据目录；如不存在则创建。

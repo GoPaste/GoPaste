@@ -97,12 +97,12 @@ function scrollToTop() {
 
 const typeOptions = computed(() => [
   { key: '' as ItemType | 'fav', label: t('all'), icon: List },
+  { key: 'fav' as ItemType | 'fav', label: t('favorite'), icon: Star },
   { key: 'text' as ItemType | 'fav', label: t('text'), icon: FileText },
   { key: 'image' as ItemType | 'fav', label: t('image'), icon: ImageIcon },
   { key: 'file' as ItemType | 'fav', label: t('file'), icon: FileIcon },
   { key: 'link' as ItemType | 'fav', label: t('link'), icon: LinkIcon },
   { key: 'code' as ItemType | 'fav', label: t('code'), icon: Code2 },
-  { key: 'fav' as ItemType | 'fav', label: t('favorite'), icon: Star },
 ])
 
 const typeIconMap: Record<string, any> = {
@@ -447,6 +447,9 @@ async function onWindowShow() {
 function onVisibilityChange() {
   if (document.visibilityState === 'visible') {
     onWindowShow()
+  } else {
+    // 窗口隐藏时退出设置，下次显示直接回到主列表
+    if (view.value !== 'main') view.value = 'main'
   }
 }
 
@@ -461,7 +464,14 @@ function switchFilter(dir: number) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  if (view.value !== 'main') return
+  // 设置界面：Esc 退出设置回到主列表
+  if (view.value !== 'main') {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      view.value = 'main'
+    }
+    return
+  }
 
   // 搜索框获焦时不拦截左右键
   const inSearch = (e.target as HTMLElement)?.tagName === 'INPUT'
@@ -566,6 +576,8 @@ function onWindowBlur() {
   setTimeout(() => {
     if (!document.hasFocus()) {
       if (suppressBlurHide.value > 0) return  // 延迟期间也可能新开了 dialog
+      // 隐藏前退出设置，下次显示直接回到主列表
+      if (view.value !== 'main') view.value = 'main'
       HideWindow()
     }
   }, 150)

@@ -15,18 +15,51 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            platform: windows/amd64
-            output: gopaste.exe
-          - os: macos-latest
+          # ===== macOS =====
+          - id: mac-arm64
+            os: macos-latest
             platform: darwin/arm64
-            output: gopaste
-          - os: macos-latest
+            output: GoPaste.app
+            os_arch: darwin_aarch64
+            kind: dmg
+          - id: mac-x64
+            os: macos-latest
             platform: darwin/amd64
-            output: gopaste
-          - os: ubuntu-latest
+            output: GoPaste.app
+            os_arch: darwin_x64
+            kind: dmg
+          - id: mac-universal
+            os: macos-latest
+            platform: darwin/universal
+            output: GoPaste.app
+            os_arch: darwin_universal
+            kind: dmg
+
+          # ===== Windows =====
+          # x64：同时输出 portable + setup
+          - id: win-x64
+            os: windows-latest
+            platform: windows/amd64
+            output: GoPaste.exe
+            os_arch: windows_x64
+            kind: win
+            nsis: 'yes'
+          # x86 (32 位)：仅输出 portable（Wails 官方 NSIS 模板不支持 386）
+          - id: win-x86
+            os: windows-latest
+            platform: windows/386
+            output: GoPaste.exe
+            os_arch: windows_x86
+            kind: win
+            nsis: 'no'
+
+          # ===== Linux =====
+          - id: linux-x64
+            os: ubuntu-latest
             platform: linux/amd64
-            output: gopaste
+            output: GoPaste
+            os_arch: linux_x64
+            kind: linux
 
     runs-on: ${{ matrix.os }}
 
@@ -36,39 +69,199 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
+          check-latest: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      # Linux 依赖
+      # ---------- Linux 依赖 ----------
       - name: Install Linux Dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libx11-dev libxtst-dev libxrandr-dev
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libx11-dev libxtst-dev libxrandr-dev \
+            libwebkit2gtk-4.1-dev \
+            xvfb
+          # Wails v2 查找 webkit2gtk-4.0，Ubuntu 24.04 只有 4.1，创建别名
+          if ! pkg-config --exists webkit2gtk-4.0 && pkg-config --exists webkit2gtk-4.1; then
+            pc=$(pkg-config --variable=pcfiledir webkit2gtk-4.1)
+            sudo ln -sf "$pc/webkit2gtk-4.1.pc" "$pc/webkit2gtk-4.0.pc"
+          fi
 
-      # 安装 Wails CLI
+      # ---------- macOS 依赖：create-dmg ----------
+      - name: Install create-dmg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
+      # ---------- Windows 依赖：NSIS（仅需要打安装包的 job）----------
+      - name: Install NSIS (Windows)
+        if: matrix.nsis == 'yes'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # GitHub Windows runner 默认未安装 NSIS，wails 找不到 makensis 会静默跳过 NSIS 打包
+          choco install nsis -y --no-progress
+          # 把 NSIS 加入 PATH，使后续步骤的 wails/bash 能调用 makensis
+          $nsisPath = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path (Join-Path $nsisPath 'makensis.exe'))) {
+            # 有些 chocolatey 版本装到 C:\Program Files\NSIS
+            $nsisPath = 'C:\Program Files\NSIS'
+          }
+          if (-not (Test-Path (Join-Path $nsisPath 'makensis.exe'))) {
+            Write-Host "Searching for makensis.exe ..."
+            Get-ChildItem -Path 'C:\','D:\' -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 FullName
+            throw "makensis.exe not found"
+          }
+          # 用 ASCII 追加，避免 BOM 导致 GitHub Actions 解析失败
+          Add-Content -Path $env:GITHUB_PATH -Value $nsisPath -Encoding ASCII
+          Write-Host "NSIS added to PATH: $nsisPath"
+          & (Join-Path $nsisPath 'makensis.exe') /VERSION
+
+      # ---------- Wails CLI ----------
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      # 构建
-      - name: Build
-        run: wails build -clean -platform ${{ matrix.platform }}
+      # ---------- Linux 虚拟显示 ----------
+      - name: Start Xvfb
+        if: runner.os == 'Linux'
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99.0" >> $GITHUB_ENV
 
-      # 上传产物
+      # ---------- 解析版本号 ----------
+      - name: Set version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="dev"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      # ---------- 构建 ----------
+      - name: Wails version
+        shell: bash
+        run: wails version
+
+      - name: Build (with NSIS)
+        if: matrix.nsis == 'yes'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          command -v makensis
+          wails build -clean -platform ${{ matrix.platform }} -nsis
+
+      - name: Build
+        if: matrix.nsis != 'yes'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wails build -clean -platform ${{ matrix.platform }}
+
+      - name: List build output
+        shell: bash
+        run: |
+          echo "--- build/bin ---"
+          ls -la build/bin/ || true
+          echo "--- build/bin/* (recursive) ---"
+          find build/bin -maxdepth 3 -type f 2>/dev/null || true
+
+      # ---------- 打包产物 ----------
+      - name: Package macOS (dmg)
+        if: matrix.kind == 'dmg'
+        shell: bash
+        run: |
+          set -e
+          cd build/bin
+          DMG="GoPaste_${VERSION}_${{ matrix.os_arch }}.dmg"
+          create-dmg \
+            --volname "GoPaste ${VERSION}" \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "${{ matrix.output }}" 150 200 \
+            --app-drop-link 450 200 \
+            --no-internet-enable \
+            "$DMG" "${{ matrix.output }}" || {
+              # create-dmg 偶发返回非 0 但 dmg 已生成，做兜底
+              [ -f "$DMG" ] || exit 1
+            }
+          # 清理原始 .app，避免被后续步骤误上传
+          rm -rf "${{ matrix.output }}"
+          ls -la
+
+      - name: Package Windows (portable + setup)
+        if: matrix.kind == 'win'
+        shell: bash
+        run: |
+          set -e
+          cd build/bin
+          PORTABLE="GoPaste_${VERSION}_${{ matrix.os_arch }}-portable.exe"
+          mv "${{ matrix.output }}" "$PORTABLE"
+          echo "PORTABLE=$PORTABLE" >> $GITHUB_ENV
+
+          if [ "${{ matrix.nsis }}" = "yes" ]; then
+            # Wails 默认输出 GoPaste-amd64-installer.exe / gopaste-amd64-installer.exe
+            INSTALLER_SRC=""
+            for f in GoPaste-amd64-installer.exe gopaste-amd64-installer.exe GoPaste-arm64-installer.exe gopaste-arm64-installer.exe GoPaste-*-installer.exe gopaste-*-installer.exe; do
+              if [ -f "$f" ]; then INSTALLER_SRC="$f"; break; fi
+            done
+            if [ -z "$INSTALLER_SRC" ]; then
+              echo "::error::NSIS installer not found in build/bin"
+              exit 1
+            fi
+            SETUP="GoPaste_${VERSION}_${{ matrix.os_arch }}-setup.exe"
+            mv "$INSTALLER_SRC" "$SETUP"
+            echo "SETUP=$SETUP" >> $GITHUB_ENV
+          fi
+          ls -la
+
+      - name: Package Linux (tar.gz)
+        if: matrix.kind == 'linux'
+        shell: bash
+        run: |
+          set -e
+          cd build/bin
+          BIN="${{ matrix.output }}"
+          TARBALL="GoPaste_${VERSION}_${{ matrix.os_arch }}.tar.gz"
+          chmod +x "$BIN"
+          tar -czvf "$TARBALL" "$BIN"
+          rm -f "$BIN"
+          echo "TARBALL=$TARBALL" >> $GITHUB_ENV
+          ls -la
+
+      # ---------- 收集要上传的文件清单 ----------
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -e
+          cd build/bin
+          # 仅收集规范命名的产物，避免任何残留被上传
+          FILES=$(ls GoPaste_*_* 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "::error::No artifacts matched GoPaste_*_*"
+            exit 1
+          fi
+          echo "Files to upload:"
+          echo "$FILES"
+
+      # ---------- 上传到 Actions Artifact ----------
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gopaste-${{ matrix.platform == 'windows/amd64' && 'windows-amd64' || matrix.platform == 'darwin/arm64' && 'macos-arm64' || matrix.platform == 'darwin/amd64' && 'macos-amd64' || 'linux-amd64' }}
-          path: build/bin/${{ matrix.output }}
+          name: GoPaste-${{ matrix.id }}-${{ env.VERSION }}
+          path: build/bin/GoPaste_*_*
+          if-no-files-found: error
 
-      # 发布到 Release（仅 tag 触发时）
+      # ---------- 发布到 Release（仅 tag 触发） ----------
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/bin/${{ matrix.output }}
+          fail_on_unmatched_files: true
+          files: build/bin/GoPaste_*_*
