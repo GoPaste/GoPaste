@@ -20,7 +20,7 @@
 ## ✨ Features
 
 - 🕐 **Auto-record** — Silently monitors your clipboard in the background; supports text, images, links, code snippets, and files
-- ⚡ **Instant access** — Global hotkey `Ctrl/Cmd + Shift + V` to summon the panel instantly, no window switching needed
+- ⚡ **Instant access** — Global hotkey <kbd>Alt</kbd> + <kbd>\`</kbd> to summon the panel instantly (customizable)
 - 🔍 **Smart search** — Real-time full-text search with type filtering, find any history item in milliseconds
 - ⭐ **Favorites & Pin** — Mark important items to keep forever; pinned items always stay at the top
 - 🔐 **Local encryption** — All content encrypted with AES-256-GCM; keys stored in the system Keychain — your data never leaves your device
@@ -37,10 +37,13 @@ Visit [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) to download
 
 | Platform | File | Notes |
 |----------|------|-------|
-| Windows x64 | `GoPaste_x.x.x.exe` | Double-click to run, no installation required |
-| Windows ARM64 | `GoPaste_x.x.x_arm64.exe` | For Surface Pro X and other ARM devices |
-| macOS Universal | `GoPaste_x.x.x.app` (`.dmg`) | Supports both Apple Silicon & Intel |
-| Linux x64 | `GoPaste_x.x.x_linux_amd64` | Requires system tray support (X11) |
+| Windows x64 Portable | `GoPaste_x.x.x_windows_x64-portable.exe` | Double-click to run, no installation required |
+| Windows x64 Installer | `GoPaste_x.x.x_windows_x64-setup.exe` | Installer with setup wizard |
+| Windows x86 Portable | `GoPaste_x.x.x_windows_x86-portable.exe` | For 32-bit systems |
+| macOS Apple Silicon | `GoPaste_x.x.x_darwin_aarch64.dmg` | M-series chips |
+| macOS Intel | `GoPaste_x.x.x_darwin_x64.dmg` | Intel chips |
+| macOS Universal | `GoPaste_x.x.x_darwin_universal.dmg` | Supports both Apple Silicon & Intel |
+| Linux x64 | `GoPaste_x.x.x_linux_x64.tar.gz` | Requires system tray support (X11) |
 
 ---
 
@@ -48,7 +51,7 @@ Visit [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) to download
 
 1. Download and launch GoPaste — it will quietly reside in your system tray
 2. Copy anything as usual (text, images, links…) — GoPaste records it automatically
-3. Press `Alt + `` ` to open the panel
+3. Press <kbd>Alt</kbd> + <kbd>\`</kbd> to open the panel
 4. Search or browse your history, then click any item to paste it into the current app
 
 **Keyboard shortcuts:**
@@ -101,7 +104,26 @@ The system will prompt you the first time you trigger a paste — just follow th
 
 ## 🖼️ Screenshots
 
-> Coming soon…
+<details>
+<summary>Simplified Chinese</summary>
+
+![Simplified Chinese](./assets/images/main_zh_sc.png)
+
+</details>
+
+<details>
+<summary>English</summary>
+
+![English](./assets/images/main_en.png)
+
+</details>
+
+<details>
+<summary>Traditional Chinese</summary>
+
+![Traditional Chinese](./assets/images/settings_zh_tc.png)
+
+</details>
 
 ---
 
@@ -110,7 +132,7 @@ The system will prompt you the first time you trigger a paste — just follow th
 - [ ] Data import (JSON restore)
 - [ ] Rich text / HTML format preservation
 - [ ] Auto-update (in-app download & install)
-- [ ] CI/CD automated builds & releases
+- [x] CI/CD automated builds & releases
 - [ ] Linux AppImage / deb / rpm packages
 - [ ] Quick-paste with number keys (`1~9` to paste corresponding items)
 - [ ] Multi-device E2E encrypted sync

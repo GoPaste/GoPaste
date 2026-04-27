@@ -20,7 +20,7 @@
 ## ✨ 功能特性
 
 - 🕐 **自动记录** — 后台静默监听剪贴板，文本、图片、链接、代码、文件全类型支持
-- ⚡ **即按即用** — 全局快捷键 `Ctrl/Cmd + Shift + V` 一键呼出，无需切换窗口
+- ⚡ **即按即用** — 全局快捷键 <kbd>Alt</kbd> + <kbd>\`</kbd> 一键呼出，无需切换窗口（支持自定义）
 - 🔍 **快速搜索** — 实时全文搜索 + 类型筛选，毫秒级定位历史内容
 - ⭐ **收藏 & 置顶** — 标记重要内容永久保留，置顶条目始终置于列表顶部
 - 🔐 **本地加密** — 所有内容使用 AES-256-GCM 加密存储，密钥托管于系统 Keychain，数据永不上云
@@ -37,10 +37,13 @@
 
 | 平台 | 文件 | 备注 |
 |------|------|------|
-| Windows x64 | `GoPaste_x.x.x.exe` | 双击直接运行，无需安装 |
-| Windows ARM64 | `GoPaste_x.x.x_arm64.exe` | Surface Pro X 等 ARM 设备 |
-| macOS Universal | `GoPaste_x.x.x.app` (`.dmg`) | 兼容 Apple Silicon & Intel |
-| Linux x64 | `GoPaste_x.x.x_linux_amd64` | 需系统托盘支持（X11） |
+| Windows x64 绿色版 | `GoPaste_x.x.x_windows_x64-portable.exe` | 双击直接运行，无需安装 |
+| Windows x64 安装版 | `GoPaste_x.x.x_windows_x64-setup.exe` | 含安装向导，自动创建快捷方式 |
+| Windows x86 绿色版 | `GoPaste_x.x.x_windows_x86-portable.exe` | 32 位系统 |
+| macOS Apple Silicon | `GoPaste_x.x.x_darwin_aarch64.dmg` | M 系列芯片 |
+| macOS Intel | `GoPaste_x.x.x_darwin_x64.dmg` | Intel 芯片 |
+| macOS Universal | `GoPaste_x.x.x_darwin_universal.dmg` | 兼容 Apple Silicon & Intel |
+| Linux x64 | `GoPaste_x.x.x_linux_x64.tar.gz` | 需系统托盘支持（X11） |
 
 ---
 
@@ -48,7 +51,7 @@
 
 1. 下载并启动 GoPaste，应用自动驻留系统托盘
 2. 正常复制任意内容（文本、图片、链接…），GoPaste 自动在后台记录
-3. 按 `Alt + `` ` 呼出面板
+3. 按 <kbd>Alt</kbd> + <kbd>\`</kbd> 呼出面板
 4. 搜索或浏览历史，点击条目即可粘贴到当前应用
 
 **快捷键速查：**
@@ -99,7 +102,26 @@ GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功
 
 ## 🖼️ 界面预览
 
-> 截图即将补充…
+<details>
+<summary>简体中文界面</summary>
+
+![简体中文](./assets/images/main_zh_sc.png)
+
+</details>
+
+<details>
+<summary>English Interface</summary>
+
+![English](./assets/images/main_en.png)
+
+</details>
+
+<details>
+<summary>繁體中文介面</summary>
+
+![繁體中文](./assets/images/settings_zh_tc.png)
+
+</details>
 
 ---
 
@@ -108,7 +130,7 @@ GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功
 - [ ] 导入数据（JSON 恢复）
 - [ ] 富文本 / HTML 格式保留
 - [ ] 自动更新（直接下载安装）
-- [ ] CI/CD 自动构建 & 发布
+- [x] CI/CD 自动构建 & 发布
 - [ ] Linux AppImage / deb / rpm 分发包
 - [ ] 快捷数字键粘贴（按 `1~9` 直接粘贴对应条目）
 - [ ] 多设备 E2E 加密同步
