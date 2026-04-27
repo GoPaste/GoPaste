@@ -60,37 +60,40 @@ type Callbacks struct {
 	OnQuit    func() // 菜单"退出"
 }
 
-//go:embed icon.ico
+//go:embed icons/tray.ico
 var iconICO []byte
 
-//go:embed icon.png
+//go:embed icons/tray-gray.ico
+var iconGrayICO []byte
+
+//go:embed icons/tray.png
 var iconPNG []byte
 
 // iconTemplatePNG 模板图标（保留备用）：
 //   - 背景完全透明，主体为黑色 "P" 剪影；
 //   - 系统会按菜单栏深浅主题自动反色渲染。
-// 由 build/gen_tray_icon.go 生成，尺寸 44×44（22pt @2x）。
+// 由 scripts/gen_tray_icon.go 生成，尺寸 44×44（22pt @2x）。
 //
 // 当前 darwin 走的是 iconColorPNG（彩色），与 dock 图标视觉一致。
 // 如要恢复"自适应深浅模式"的规范做法，把 applyIcon() 里 darwin 分支
 // 改回 SetTemplateIcon(iconTemplatePNG, iconTemplatePNG) 即可。
 //
-//go:embed icon_template.png
+//go:embed icons/tray-template.png
 var iconTemplatePNG []byte
 
 // iconColorPNG 彩色 macOS 状态栏图标：
-//   - 由 build/gen_appicon.py 从 build/appicon.src.png 缩放生成；
-//   - 尺寸 44×44（22pt @2x），自带圆角；
+//   - 由 scripts/gen_appicon.py 从 build/appicon.src.png 缩放生成；
+//   - 尺寸 88×88（22pt @4x），自带圆角；
 //   - 走 SetIcon（非 template），系统不会再染色，所见即所得。
 //
-//go:embed icon_color.png
+//go:embed icons/tray-color.png
 var iconColorPNG []byte
 
 // iconGrayPNG 灰色系 macOS 状态栏图标：
-//   - 由 build/appicon.src.png 灰度转换生成；
+//   - 由 scripts/gen_tray_icon_gray.py 从 build/appicon.src.png 灰度转换生成；
 //   - 尺寸 44×44，适合不需要彩色强调色的场景。
 //
-//go:embed icon_gray.png
+//go:embed icons/tray-gray.png
 var iconGrayPNG []byte
 
 // Start 启动系统托盘。
@@ -172,11 +175,15 @@ func Start(cb Callbacks) (cleanup func()) {
 	return func() { end() }
 }
 
-// applyIcon 设置平台对应的图标。
+// applyIcon 设置平台对应的图标，感知当前图标风格。
 // 抽成独立函数，在 Start 的 onReady 和 SetVisible(true) 中都需要调用。
 func applyIcon() {
 	if runtime.GOOS == "windows" {
-		systray.SetIcon(iconICO)
+		if currentIconStyle == "gray" {
+			systray.SetIcon(iconGrayICO)
+		} else {
+			systray.SetIcon(iconICO)
+		}
 	} else if runtime.GOOS == "darwin" {
 		// 用户选择菜单栏图标与 dock 图标视觉一致：用彩色 SetIcon，
 		// 而非 template。如要恢复自适应深浅模式的规范做法，改回
@@ -224,11 +231,11 @@ func SetVisible(show bool) {
 	}
 }
 
-// SetIconStyle 切换菜单栏图标风格。
+// SetIconStyle 切换托盘/菜单栏图标风格。
 // style: "color"（彩色）| "gray"（灰色）。
-// 仅 macOS 生效；其他平台为 no-op。
+// macOS 和 Windows 生效；Linux 为 no-op。
 func SetIconStyle(style string) {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		return
 	}
 	setIconStylePlatform(style)

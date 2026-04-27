@@ -46,7 +46,7 @@ PAD = (CANVAS - INNER) // 2
 
 OUT_APPICON = ROOT / "build" / "appicon.png"
 OUT_SRC_BACKUP = ROOT / "build" / "appicon.src.png"
-OUT_TRAY = ROOT / "internal" / "tray" / "icon_color.png"
+OUT_TRAY = ROOT / "internal" / "tray" / "icons" / "tray-color.png"
 # 菜单栏图标尺寸：经实测 fyne.io/systray 在 macOS 上把 NSImage 渲染到约
 # 22pt × 22pt（retina 下 44px）。但我们提供 88px（22pt @4x）让系统自己降采样，
 # 比 PIL 直接缩到 44px 锐利得多。同时图像本体必须铺满整个画布——菜单栏不

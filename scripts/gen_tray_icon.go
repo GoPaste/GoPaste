@@ -98,7 +98,7 @@ func main() {
 			img.SetNRGBA(x, y, color.NRGBA{R: 0, G: 0, B: 0, A: a})
 		}
 	}
-	f, err := os.Create("internal/tray/icon_template.png")
+	f, err := os.Create("internal/tray/icons/tray-template.png")
 	if err != nil {
 		panic(err)
 	}

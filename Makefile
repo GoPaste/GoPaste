@@ -3,12 +3,17 @@
 # 示例: make dev / make build-win / make build-all
 
 # ============== 变量 ==============
-APP_NAME    := gopaste
-VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+APP_NAME    := GoPaste
+# Wails outputfilename（与 wails.json 的 outputfilename 保持一致）
+WAILS_OUT   := GoPaste
+# 版本号统一从 wails.json 的 productVersion 字段读取，是唯一的版本来源
+VERSION     := $(shell node -e "console.log(require('./wails.json').info.productVersion)" 2>/dev/null || \
+               python3 -c "import json;print(json.load(open('wails.json'))['info']['productVersion'])" 2>/dev/null || \
+               echo "dev")
 BUILD_DIR   := build/bin
 WAILS       := wails
 GO          := go
-LDFLAGS     := -s -w -X main.version=$(VERSION)
+LDFLAGS     := -s -w -X gopaste/internal/updater.Version=$(VERSION)
 
 # Wails 构建通用参数
 WAILS_FLAGS := -ldflags "$(LDFLAGS)"
@@ -51,36 +56,39 @@ endif
 build: ## 构建当前平台
 ifeq ($(UNAME_S),Darwin)
 	unset GOROOT; $(WAILS) build -clean $(WAILS_FLAGS)
+	mv $(BUILD_DIR)/$(WAILS_OUT).app $(BUILD_DIR)/$(APP_NAME)_$(VERSION).app 2>/dev/null || \
+	mv $(BUILD_DIR)/$(WAILS_OUT)     $(BUILD_DIR)/$(APP_NAME)_$(VERSION)     2>/dev/null || true
 else
 	$(XVFB) $(WAILS) build -clean $(WAILS_FLAGS)
+	mv $(BUILD_DIR)/$(WAILS_OUT) $(BUILD_DIR)/$(APP_NAME)_$(VERSION) 2>/dev/null || true
 endif
-	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
+	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)_$(VERSION)$(RESET)"
 
-build-win: ## 构建 Windows (amd64) ⚠️ 需在 Windows 上运行，或使用 GitHub Actions
-	@if [ "$$(uname)" != "MINGW64_NT" ] && [ "$$(uname)" != "MSYS_NT" ] && [ "$$(expr substr $$(uname -s) 1 5)" != "MINGW" ] && [ "$$(uname -s)" != "Windows_NT" ]; then \
-		echo "$(CYAN)⚠ Windows 应用只能在 Windows 上原生构建（避免 CGO 交叉编译兼容问题）$(RESET)"; \
-		echo "  推荐使用 GitHub Actions: git tag v0.x.x && git push --tags"; \
-		exit 1; \
-	fi
-	$(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
-	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
+build-win: ## 构建 Windows (amd64)
+	$(XVFB) $(WAILS) build -clean -platform windows/amd64 $(WAILS_FLAGS)
+	mv $(BUILD_DIR)/$(WAILS_OUT).exe $(BUILD_DIR)/$(APP_NAME)_$(VERSION).exe
+	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)_$(VERSION).exe$(RESET)"
 
 build-win-arm: ## 构建 Windows (arm64)
 	$(XVFB) $(WAILS) build -clean -platform windows/arm64 $(WAILS_FLAGS)
-	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).exe$(RESET)"
+	mv $(BUILD_DIR)/$(WAILS_OUT).exe $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_arm64.exe
+	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_arm64.exe$(RESET)"
 
 build-mac: ## 构建 macOS (universal) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建（Wails 限制）$(RESET)"; echo "  推荐使用 GitHub Actions: git tag v0.1.0 && git push --tags"; exit 1; fi
 	unset GOROOT; $(WAILS) build -clean -platform darwin/universal $(WAILS_FLAGS)
-	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME).app$(RESET)"
+	mv $(BUILD_DIR)/$(WAILS_OUT).app $(BUILD_DIR)/$(APP_NAME)_$(VERSION).app
+	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)_$(VERSION).app$(RESET)"
 
 build-mac-arm: ## 构建 macOS (Apple Silicon) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
 	unset GOROOT; $(WAILS) build -clean -platform darwin/arm64 $(WAILS_FLAGS)
+	mv $(BUILD_DIR)/$(WAILS_OUT).app $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_arm64.app
 
 build-mac-intel: ## 构建 macOS (Intel) ⚠️ 需在 macOS 上运行
 	@if [ "$$(uname)" != "Darwin" ]; then echo "$(CYAN)⚠ macOS 应用只能在 macOS 上构建$(RESET)"; exit 1; fi
 	unset GOROOT; $(WAILS) build -clean -platform darwin/amd64 $(WAILS_FLAGS)
+	mv $(BUILD_DIR)/$(WAILS_OUT).app $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_intel.app
 
 build-linux: ## 构建 Linux (amd64) ⚠️ 需在 Linux 上运行，或使用 GitHub Actions
 	@if [ "$$(uname)" != "Linux" ]; then \
@@ -89,9 +97,10 @@ build-linux: ## 构建 Linux (amd64) ⚠️ 需在 Linux 上运行，或使用 G
 		exit 1; \
 	fi
 	$(WAILS) build -clean -platform linux/amd64 $(WAILS_FLAGS)
-	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)$(RESET)"
+	mv $(BUILD_DIR)/$(WAILS_OUT) $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_linux_amd64
+	@echo "$(GREEN)✓ Built: $(BUILD_DIR)/$(APP_NAME)_$(VERSION)_linux_amd64$(RESET)"
 
-build-all: build-win build-linux ## 构建 Windows + Linux（macOS 需在 Mac 上单独构建或用 CI）
+build-all: build-win build-linux ## 构建 Windows + Linux
 	@echo "$(GREEN)✓ Windows + Linux built$(RESET)"
 	@echo "$(CYAN)ℹ macOS 请在 Mac 上运行 make build-mac，或使用 GitHub Actions$(RESET)"
 
@@ -103,7 +112,7 @@ gen-icons: ## 重新生成所有图标（彩色 appicon + 彩色/灰色菜单栏
 	python3 scripts/gen_appicon.py
 	python3 scripts/gen_tray_icon_gray.py
 
-gen-icon-template: ## 重新生成模板图标（icon_template.png）
+gen-icon-template: ## 重新生成模板图标（tray-template.png）
 	$(GO) run scripts/gen_tray_icon.go
 
 # ============== Go 工具链 ==============
