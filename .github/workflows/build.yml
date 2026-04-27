@@ -40,7 +40,7 @@ jobs:
           - id: win-x64
             os: windows-latest
             platform: windows/amd64
-            output: gopaste.exe
+            output: GoPaste.exe
             os_arch: windows_x64
             kind: win
             nsis: 'yes'
@@ -48,7 +48,7 @@ jobs:
           - id: win-x86
             os: windows-latest
             platform: windows/386
-            output: gopaste.exe
+            output: GoPaste.exe
             os_arch: windows_x86
             kind: win
             nsis: 'no'
@@ -57,7 +57,7 @@ jobs:
           - id: linux-x64
             os: ubuntu-latest
             platform: linux/amd64
-            output: gopaste
+            output: GoPaste
             os_arch: linux_x64
             kind: linux
 
@@ -206,9 +206,9 @@ jobs:
           echo "PORTABLE=$PORTABLE" >> $GITHUB_ENV
 
           if [ "${{ matrix.nsis }}" = "yes" ]; then
-            # Wails 默认输出 gopaste-amd64-installer.exe / gopaste-arm64-installer.exe
+            # Wails 默认输出 GoPaste-amd64-installer.exe / gopaste-amd64-installer.exe
             INSTALLER_SRC=""
-            for f in gopaste-amd64-installer.exe gopaste-arm64-installer.exe gopaste-*-installer.exe; do
+            for f in GoPaste-amd64-installer.exe gopaste-amd64-installer.exe GoPaste-arm64-installer.exe gopaste-arm64-installer.exe GoPaste-*-installer.exe gopaste-*-installer.exe; do
               if [ -f "$f" ]; then INSTALLER_SRC="$f"; break; fi
             done
             if [ -z "$INSTALLER_SRC" ]; then
@@ -227,7 +227,7 @@ jobs:
         run: |
           set -e
           cd build/bin
-          BIN="gopaste"
+          BIN="${{ matrix.output }}"
           TARBALL="GoPaste_${VERSION}_${{ matrix.os_arch }}.tar.gz"
           chmod +x "$BIN"
           tar -czvf "$TARBALL" "$BIN"

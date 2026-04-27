@@ -6,9 +6,9 @@
 
 **轻量、快速、安全的跨平台剪贴板管理工具**
 
-[![Release](https://img.shields.io/github/v/release/larkwins/GoPaste?style=flat-square&logo=github)](https://github.com/larkwins/GoPaste/releases)
-[![License](https://img.shields.io/github/license/larkwins/GoPaste?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](https://github.com/larkwins/GoPaste/releases)
+[![Release](https://img.shields.io/github/v/release/GoPaste/GoPaste?style=flat-square&logo=github)](https://github.com/GoPaste/GoPaste/releases)
+[![License](https://img.shields.io/github/license/GoPaste/GoPaste?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](https://github.com/GoPaste/GoPaste/releases)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 
 [简体中文](#) · [English](README.en.md)
@@ -33,7 +33,7 @@
 
 ## 📦 下载安装
 
-前往 [GitHub Releases](https://github.com/larkwins/GoPaste/releases) 下载最新版本。
+前往 [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) 下载最新版本。
 
 | 平台 | 文件 | 备注 |
 |------|------|------|
@@ -119,8 +119,8 @@ GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功
 
 欢迎提交 Issue 和 Pull Request！
 
-- **Bug 反馈** → [GitHub Issues](https://github.com/larkwins/GoPaste/issues)
-- **功能建议** → [GitHub Discussions](https://github.com/larkwins/GoPaste/discussions)
+- **Bug 反馈** → [GitHub Issues](https://github.com/GoPaste/GoPaste/issues)
+- **功能建议** → [GitHub Discussions](https://github.com/GoPaste/GoPaste/discussions)
 - **开发指南** → 参阅 [CONTRIBUTING.md](docs/CONTRIBUTING.md)（即将补充）
 
 ---
