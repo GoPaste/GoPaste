@@ -1,186 +1,130 @@
-# gopaste
+<div align="center">
 
-> 基于 **Wails v2 + Go + Vue 3 + TypeScript** 的轻量跨平台剪切板管理工具。
+<img src="build/appicon.png" width="120" height="120" alt="GoPaste Logo" />
 
-## 特性
+# GoPaste
 
-- 🕐 自动记录剪切板历史（文本 + 图片）
-- 🔍 全文搜索 · 类型过滤（文本 / 图片 / 链接 / 代码）
-- ⭐ 收藏、📌 置顶
-- ⌨️  全局快捷键 `Ctrl/Cmd + Shift + V` 呼出
-- 🔐 本地 AES-256-GCM 加密存储，密钥存于系统 Keychain
-- 🖥  Windows / macOS / Linux 三端支持
+**轻量、快速、安全的跨平台剪贴板管理工具**
 
-详细设计见 [DESIGN.md](./DESIGN.md)。
+[![Release](https://img.shields.io/github/v/release/larkwins/GoPaste?style=flat-square&logo=github)](https://github.com/larkwins/GoPaste/releases)
+[![License](https://img.shields.io/github/license/larkwins/GoPaste?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](https://github.com/larkwins/GoPaste/releases)
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 
-## 安装与升级须知
+[简体中文](#) · [English](README.en.md)
 
-### macOS
+</div>
 
-GoPaste 当前发行版**未使用 Apple Developer 证书签名**（采用 ad-hoc 签名），
-因此 macOS 下用户可能遇到以下三种现象，按出现顺序说明。
+---
 
-#### 现象 1：首次打开提示"无法打开，来自身份不明的开发者"
+## ✨ 功能特性
 
-最常见的情况。从 GitHub Releases 下载 `.dmg` 后双击 `GoPaste.app` 时弹出：
+- 🕐 **自动记录** — 后台静默监听剪贴板，文本、图片、链接、代码、文件全类型支持
+- ⚡ **即按即用** — 全局快捷键 `Ctrl/Cmd + Shift + V` 一键呼出，无需切换窗口
+- 🔍 **快速搜索** — 实时全文搜索 + 类型筛选，毫秒级定位历史内容
+- ⭐ **收藏 & 置顶** — 标记重要内容永久保留，置顶条目始终置于列表顶部
+- 🔐 **本地加密** — 所有内容使用 AES-256-GCM 加密存储，密钥托管于系统 Keychain，数据永不上云
+- 🖥️ **三端原生** — 深度适配 Windows、macOS、Linux，安装包 ≤ 20 MB
+- 🎨 **双主题** — 深色 / 浅色主题自由切换
+- 🌏 **多语言** — 简体中文、繁體中文、English
+- 📤 **数据导出** — 一键导出 JSON，数据自由掌控
 
-> 无法打开 "GoPaste"，因为它来自身份不明的开发者。
+---
+
+## 📦 下载安装
+
+前往 [GitHub Releases](https://github.com/larkwins/GoPaste/releases) 下载最新版本。
+
+| 平台 | 文件 | 备注 |
+|------|------|------|
+| Windows x64 | `GoPaste_x.x.x.exe` | 双击直接运行，无需安装 |
+| Windows ARM64 | `GoPaste_x.x.x_arm64.exe` | Surface Pro X 等 ARM 设备 |
+| macOS Universal | `GoPaste_x.x.x.app` (`.dmg`) | 兼容 Apple Silicon & Intel |
+| Linux x64 | `GoPaste_x.x.x_linux_amd64` | 需系统托盘支持（X11） |
+
+---
+
+## 🚀 快速上手
+
+1. 下载并启动 GoPaste，应用自动驻留系统托盘
+2. 正常复制任意内容（文本、图片、链接…），GoPaste 自动在后台记录
+3. 按 `Ctrl + Shift + V`（Windows/Linux）或 `Cmd + Shift + V`（macOS）呼出面板
+4. 搜索或浏览历史，点击条目即可粘贴到当前应用
+
+**快捷键速查：**
+
+| 键 | 动作 |
+|----|------|
+| `↑` / `↓` | 上下选择条目 |
+| `Enter` | 粘贴选中条目 |
+| `Esc` | 关闭面板 |
+| `Delete` | 删除选中条目 |
+| `Tab` / `Shift+Tab` | 切换内容类型 |
+
+---
+
+## ⚠️ macOS 注意事项
+
+### 首次打开提示"身份不明的开发者"
+
+GoPaste 当前版本未使用 Apple Developer 证书签名（ad-hoc 签名），首次启动时 macOS Gatekeeper 会拦截。
 
 **解决方法：**
 
-1. 把 `GoPaste.app` 从 dmg 拖到 `应用程序`（Applications）
-2. 双击运行（被拒绝是预期，先关掉提示框）
-3. 打开 **系统设置 → 隐私与安全性**
-4. 滚动到底部"安全性"区域，会看到一行 *"已阻止使用 GoPaste，因为来自身份不明的开发者"*，
-   点右边的 **"仍要打开"**
-5. 在弹出的二次确认框中点 **"打开"**
+1. 将 `GoPaste.app` 拖入「应用程序」文件夹
+2. 双击运行（被拦截是正常现象，关掉提示框）
+3. 打开「系统设置 → 隐私与安全性」，滚动到底部点击**「仍要打开」**
 
-之后双击即可正常启动，系统会记住这次授权。
+> 也可在 Finder 中**右键 → 打开**，然后在弹框中点「打开」。
 
-> 也可以用更快的方式：在 Finder 中**右键（Control + 单击）GoPaste → 打开**，
-> 弹框里点"打开"。效果一样。
+### 提示"已损坏，无法打开"
 
-#### 现象 2：提示"GoPaste.app 已损坏，无法打开"
-
-少数情况会直接显示：
-
-> "GoPaste.app" 已损坏，无法打开。你应该将它移到废纸篓。
-
-这**并非文件真的损坏**，而是 macOS 14+ 在某些场景下对 ad-hoc 签名 + quarantine
-属性的组合更严格，连"仍要打开"按钮都不给。
-
-**解决方法：** 打开 **终端（Terminal）**，执行：
+在终端执行：
 
 ```bash
 xattr -cr /Applications/GoPaste.app
 ```
 
-该命令递归清除 .app 的扩展属性（含触发 Gatekeeper 的 `com.apple.quarantine`），
-再双击即可正常打开。
+### 辅助功能权限（模拟粘贴必需）
 
-#### 现象 3：粘贴失效，"辅助功能"开关看着却是开的（首次安装 / 每次升级后）
+GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功能」权限。
 
-GoPaste 通过模拟 `Cmd+V` 把内容粘贴到目标应用，需要在
-**系统设置 → 隐私与安全性 → 辅助功能** 中授权 GoPaste。
+首次触发粘贴时系统会弹出授权框，按引导授权即可。
 
-首次安装时，第一次触发粘贴会弹出系统授权框，按引导授权即可。
+> ⚠️ **每次升级后**需要在「系统设置 → 隐私与安全性 → 辅助功能」中，先**删除**旧的 GoPaste 授权记录，再重新授权。否则面板消失但内容未粘出。
+>
+> 详见 [macOS 辅助功能说明](docs/macos-accessibility.md)
 
-但**每次升级到新版本后，原有授权会失效**：
+---
 
-- 系统设置里"辅助功能"列表中 GoPaste 开关看起来仍是开着的 ✅
-- 但点击粘贴时面板消失、内容没粘出来 ❌
+## 🖼️ 界面预览
 
-原因：ad-hoc 签名下 macOS TCC 按二进制哈希（CDHash）追踪授权，
-新版二进制 CDHash 变了，旧授权失效——但 UI 仍按 bundle id 显示，
-导致看起来"还在授权列表里、却不生效"。
+> 截图即将补充…
 
-**解决方法：**
+---
 
-1. 打开 **系统设置 → 隐私与安全性 → 辅助功能**
-2. **选中 GoPaste，点 −（减号）删除这条记录**
-3. 回到 GoPaste 再触发一次粘贴，系统会重新弹框请求授权
-4. 勾选后即恢复正常
+## 🗺️ 路线图
 
-> 详细原理与开发者侧的彻底解决方案（Developer ID 签名）见
-> [`docs/macos-accessibility.md`](./docs/macos-accessibility.md)。
+- [ ] 导入数据（JSON 恢复）
+- [ ] 富文本 / HTML 格式保留
+- [ ] 自动更新（直接下载安装）
+- [ ] CI/CD 自动构建 & 发布
+- [ ] Linux AppImage / deb / rpm 分发包
+- [ ] 快捷数字键粘贴（按 `1~9` 直接粘贴对应条目）
+- [ ] 多设备 E2E 加密同步
 
-### Windows / Linux
+---
 
-无上述限制，正常安装升级即可。
+## 🤝 参与贡献
 
-## 开发环境
+欢迎提交 Issue 和 Pull Request！
 
-- Go 1.22+
-- Node.js 20+
-- Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+- **Bug 反馈** → [GitHub Issues](https://github.com/larkwins/GoPaste/issues)
+- **功能建议** → [GitHub Discussions](https://github.com/larkwins/GoPaste/discussions)
+- **开发指南** → 参阅 [CONTRIBUTING.md](docs/CONTRIBUTING.md)（即将补充）
 
-### 各平台系统依赖
+---
 
-| 平台 | 依赖 |
-|------|------|
-| Linux (Debian/Ubuntu) | `libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev libxtst-dev` |
-| Linux (RHEL/TencentOS) | `gtk3-devel webkit2gtk4.0-devel libX11-devel libXtst-devel` |
-| macOS | Xcode Command Line Tools |
-| Windows | WebView2 Runtime（Win11 自带） |
+## 📄 License
 
-## 常用命令
-
-项目提供了 `Makefile`，运行 `make help` 查看所有可用命令：
-
-### 开发
-
-| 命令 | 说明 |
-|------|------|
-| `make dev` | 热重载开发模式 |
-| `make debug` | 开发模式 + DevTools |
-
-### 构建
-
-| 命令 | 说明 |
-|------|------|
-| `make build` | 构建当前平台 |
-| `make build-win` | 构建 Windows x64 |
-| `make build-win-arm` | 构建 Windows ARM64 |
-| `make build-mac` | 构建 macOS Universal |
-| `make build-mac-arm` | 构建 macOS Apple Silicon |
-| `make build-mac-intel` | 构建 macOS Intel |
-| `make build-linux` | 构建 Linux x64 |
-| `make build-all` | 全平台一次构建 |
-| `make release` | 清理 + 全平台构建（发布用） |
-
-### 测试 & 检查
-
-| 命令 | 说明 |
-|------|------|
-| `make test` | 运行单元测试 |
-| `make test-cover` | 测试 + 覆盖率 HTML 报告 |
-| `make bench` | 性能测试 |
-| `make lint` | Go vet 静态检查 |
-
-### 前端
-
-| 命令 | 说明 |
-|------|------|
-| `make fe-install` | 安装前端依赖 |
-| `make fe-build` | 仅构建前端 |
-| `make fe-dev` | 前端独立开发服务器 |
-
-### 工具 & 环境
-
-| 命令 | 说明 |
-|------|------|
-| `make generate` | 重新生成前端 TS 绑定 |
-| `make tidy` | go mod tidy |
-| `make doctor` | 检查 Wails 环境 |
-| `make install-deps` | 安装 Linux 系统依赖（自动识别 apt/yum） |
-| `make install-wails` | 安装 Wails CLI |
-
-### 清理 & 信息
-
-| 命令 | 说明 |
-|------|------|
-| `make clean` | 清理构建产物 |
-| `make clean-all` | 深度清理（含 node_modules） |
-| `make info` | 显示项目/环境信息 |
-| `make help` | 显示所有命令 |
-
-## 目录结构
-
-```
-gopaste/
-├── app.go                 # Wails RPC 绑定层
-├── main.go                # 入口
-├── internal/
-│   ├── types/             # 共享数据结构
-│   ├── clipboard/         # 剪切板监听
-│   ├── storage/           # SQLite 持久化
-│   ├── crypto/            # AES-256-GCM + Keyring
-│   ├── hotkey/            # 全局快捷键
-│   ├── paste/             # 写回剪切板 & 模拟粘贴（平台分文件）
-│   └── config/            # 数据目录
-└── frontend/              # Vue 3 前端
-```
-
-## License
-
-MIT
+[MIT](LICENSE) © 2026 larkwins
