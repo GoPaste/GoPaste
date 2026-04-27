@@ -58,11 +58,48 @@ Visit [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) to download
 
 | Key | Action |
 |-----|--------|
+| `Tab` / `Shift+Tab` | Switch content type filter |
 | `↑` / `↓` | Navigate items |
 | `Enter` | Paste selected item |
 | `Esc` | Close the panel |
 | `Delete` | Delete selected item |
-| `Tab` / `Shift+Tab` | Switch content type filter |
+
+---
+
+## 🖼️ Screenshots
+
+<details open>
+<summary>Simplified Chinese</summary>
+
+![Simplified Chinese](./assets/images/main_zh_sc.png)
+
+</details>
+
+<details>
+<summary>English</summary>
+
+![English](./assets/images/main_en.png)
+
+</details>
+
+<details>
+<summary>Traditional Chinese</summary>
+
+![Traditional Chinese](./assets/images/settings_zh_tc.png)
+
+</details>
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Data import (JSON restore)
+- [ ] Rich text / HTML format preservation
+- [ ] Auto-update (in-app download & install)
+- [x] CI/CD automated builds & releases
+- [ ] Linux AppImage / deb / rpm packages
+- [ ] Quick-paste with number keys (`1~9` to paste corresponding items)
+- [ ] Multi-device E2E encrypted sync
 
 ---
 
@@ -99,43 +136,6 @@ The system will prompt you the first time you trigger a paste — just follow th
 > ⚠️ **After every upgrade**, you must remove the old GoPaste entry from **System Settings → Privacy & Security → Accessibility** and re-authorize. Otherwise the panel closes but content doesn't paste.
 >
 > See [macOS Accessibility Guide](docs/macos-accessibility.md) for details.
-
----
-
-## 🖼️ Screenshots
-
-<details>
-<summary>Simplified Chinese</summary>
-
-![Simplified Chinese](./assets/images/main_zh_sc.png)
-
-</details>
-
-<details>
-<summary>English</summary>
-
-![English](./assets/images/main_en.png)
-
-</details>
-
-<details>
-<summary>Traditional Chinese</summary>
-
-![Traditional Chinese](./assets/images/settings_zh_tc.png)
-
-</details>
-
----
-
-## 🗺️ Roadmap
-
-- [ ] Data import (JSON restore)
-- [ ] Rich text / HTML format preservation
-- [ ] Auto-update (in-app download & install)
-- [x] CI/CD automated builds & releases
-- [ ] Linux AppImage / deb / rpm packages
-- [ ] Quick-paste with number keys (`1~9` to paste corresponding items)
-- [ ] Multi-device E2E encrypted sync
 
 ---
 

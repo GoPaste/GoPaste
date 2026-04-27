@@ -58,11 +58,48 @@
 
 | 键 | 动作 |
 |----|------|
+| `Tab` / `Shift+Tab` | 切换内容类型 |
 | `↑` / `↓` | 上下选择条目 |
 | `Enter` | 粘贴选中条目 |
 | `Esc` | 关闭面板 |
 | `Delete` | 删除选中条目 |
-| `Tab` / `Shift+Tab` | 切换内容类型 |
+
+---
+
+## 🖼️ 界面预览
+
+<details open>
+<summary>简体中文界面</summary>
+
+![简体中文](./assets/images/main_zh_sc.png)
+
+</details>
+
+<details>
+<summary>English Interface</summary>
+
+![English](./assets/images/main_en.png)
+
+</details>
+
+<details>
+<summary>繁體中文介面</summary>
+
+![繁體中文](./assets/images/settings_zh_tc.png)
+
+</details>
+
+---
+
+## 🗺️ 路线图
+
+- [ ] 导入数据（JSON 恢复）
+- [ ] 富文本 / HTML 格式保留
+- [ ] 自动更新（直接下载安装）
+- [x] CI/CD 自动构建 & 发布
+- [ ] Linux AppImage / deb / rpm 分发包
+- [ ] 快捷数字键粘贴（按 `1~9` 直接粘贴对应条目）
+- [ ] 多设备 E2E 加密同步
 
 ---
 
@@ -97,43 +134,6 @@ GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功
 > ⚠️ **每次升级后**需要在「系统设置 → 隐私与安全性 → 辅助功能」中，先**删除**旧的 GoPaste 授权记录，再重新授权。否则面板消失但内容未粘出。
 >
 > 详见 [macOS 辅助功能说明](docs/macos-accessibility.md)
-
----
-
-## 🖼️ 界面预览
-
-<details>
-<summary>简体中文界面</summary>
-
-![简体中文](./assets/images/main_zh_sc.png)
-
-</details>
-
-<details>
-<summary>English Interface</summary>
-
-![English](./assets/images/main_en.png)
-
-</details>
-
-<details>
-<summary>繁體中文介面</summary>
-
-![繁體中文](./assets/images/settings_zh_tc.png)
-
-</details>
-
----
-
-## 🗺️ 路线图
-
-- [ ] 导入数据（JSON 恢复）
-- [ ] 富文本 / HTML 格式保留
-- [ ] 自动更新（直接下载安装）
-- [x] CI/CD 自动构建 & 发布
-- [ ] Linux AppImage / deb / rpm 分发包
-- [ ] 快捷数字键粘贴（按 `1~9` 直接粘贴对应条目）
-- [ ] 多设备 E2E 加密同步
 
 ---
 
