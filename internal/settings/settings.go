@@ -33,8 +33,8 @@ type Settings struct {
 // Default 返回默认设置。
 func Default() Settings {
 	return Settings{
-		HotkeyModifiers:   []string{"ctrl", "shift"},
-		HotkeyKey:         "V",
+		HotkeyModifiers:   []string{"alt"},
+		HotkeyKey:         "`",
 		MaxItems:          1000,
 		MaxDays:           30,
 		Theme:             "dark",

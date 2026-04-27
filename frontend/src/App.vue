@@ -97,12 +97,12 @@ function scrollToTop() {
 
 const typeOptions = computed(() => [
   { key: '' as ItemType | 'fav', label: t('all'), icon: List },
+  { key: 'fav' as ItemType | 'fav', label: t('favorite'), icon: Star },
   { key: 'text' as ItemType | 'fav', label: t('text'), icon: FileText },
   { key: 'image' as ItemType | 'fav', label: t('image'), icon: ImageIcon },
   { key: 'file' as ItemType | 'fav', label: t('file'), icon: FileIcon },
   { key: 'link' as ItemType | 'fav', label: t('link'), icon: LinkIcon },
   { key: 'code' as ItemType | 'fav', label: t('code'), icon: Code2 },
-  { key: 'fav' as ItemType | 'fav', label: t('favorite'), icon: Star },
 ])
 
 const typeIconMap: Record<string, any> = {

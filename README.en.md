@@ -48,7 +48,7 @@ Visit [GitHub Releases](https://github.com/larkwins/GoPaste/releases) to downloa
 
 1. Download and launch GoPaste — it will quietly reside in your system tray
 2. Copy anything as usual (text, images, links…) — GoPaste records it automatically
-3. Press `Ctrl + Shift + V` (Windows/Linux) or `Cmd + Shift + V` (macOS) to open the panel
+3. Press `Alt + `` ` to open the panel
 4. Search or browse your history, then click any item to paste it into the current app
 
 **Keyboard shortcuts:**
