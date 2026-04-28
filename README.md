@@ -15,6 +15,8 @@
 
 </div>
 
+![](./assets/images/poster.png)
+
 ---
 
 ## ✨ 功能特性
