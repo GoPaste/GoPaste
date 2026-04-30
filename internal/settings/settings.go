@@ -28,6 +28,7 @@ type Settings struct {
 	ShowTaskbarIcon   bool     `json:"showTaskbarIcon"`   // 显示任务栏图标
 	TrayIconStyle     string   `json:"trayIconStyle"`     // 菜单栏图标风格："color"（彩色）| "gray"（灰色）
 	AutoStart         bool     `json:"autoStart"`         // 开机自启动
+	TabHotkeysEnabled bool     `json:"tabHotkeysEnabled"` // 是否启用 Alt+1..6 全局切分类热键（关掉避免与其它软件冲突）
 }
 
 // Default 返回默认设置。
@@ -50,6 +51,7 @@ func Default() Settings {
 		ShowTaskbarIcon:   false,
 		TrayIconStyle:     "color",
 		AutoStart:         false,
+		TabHotkeysEnabled: true,
 	}
 }
 

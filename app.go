@@ -245,6 +245,37 @@ func (a *App) domReady(ctx context.Context) {
 	if runtime.GOOS != "darwin" {
 		tray.FlushPendingStart()
 	}
+
+	// 冷启动焦点修复：
+	// 当 StartHidden=false（用户没开静默启动）时，wails 会自己把窗口显示
+	// 出来 —— 但它走的是 ShowWindow，不会调 forceForeground。background
+	// process 启动新窗口时 OS 不会自动把键盘焦点给它，结果就是窗口可见但
+	// 不在前台，所有快捷键失灵，必须用鼠标点一下才"激活"。
+	//
+	// 修法：domReady 时若窗口已显示，主动调 ShowMain 抢前台 + emit
+	// window:show 让前端跑 onWindowShow（聚焦搜索框、回到顶部等）。
+	//
+	// 仅 Windows 需要：macOS 由 AppKit 处理首窗口激活；Linux 上 wm 通常
+	// 也会把焦点给新窗口。windowVisible 在 setVisible 里维护，初始 false，
+	// 所以这里用 wails runtime 的真实状态判断。
+	if runtime.GOOS == "windows" && a.ctx != nil {
+		if !wailsruntime.WindowIsMinimised(a.ctx) {
+			// 仅当 StartHidden=false 时窗口才是可见的；StartHidden=true 时
+			// wails 不会显示窗口，此处也不该强行显示（违背用户设置）。
+			// 用 settings 判断比直接调 wails API 更可靠（wails v2 没暴露
+			// IsVisible 给业务层）。
+			silentStart := false
+			if a.settings != nil {
+				silentStart = a.settings.Get().SilentStart
+			}
+			if !silentStart {
+				window.ShowMain(a.ctx)
+				a.setVisible(true)
+				wailsruntime.EventsEmit(a.ctx, "window:show")
+				bootProbeApp("domReady: cold-start ShowMain done")
+			}
+		}
+	}
 }
 
 func (a *App) registerHotkey() {
@@ -262,6 +293,55 @@ func (a *App) registerHotkey() {
 		return
 	}
 	a.hotkey = hk
+
+	// 附加：Alt+1..6 全局快捷键（受 TabHotkeysEnabled 开关控制）。
+	// 即使主面板未显示也会被系统级捕获 → 唤起面板并切到对应 tab。
+	// 索引含义与前端 typeOptions 一致：1=收藏, 2=文本, 3=图片, 4=文件, 5=链接, 6=代码。
+	// "全部"(idx=0) 不再绑定快捷键 → 由主热键唤起即可（resetFilterOnShow 默认会回到全部）。
+	// 关闭原因：Alt+1..6 容易与其它软件（IDE、浏览器等）的快捷键冲突，用户可在设置里关掉。
+	if s.TabHotkeysEnabled {
+		tabKeys := []string{"1", "2", "3", "4", "5", "6"}
+		for i, k := range tabKeys {
+			idx := i + 1 // 跳过 0=全部，从 1 开始
+			key := k     // 闭包捕获，避免共享 loop var
+			if err := a.hotkey.Add(a.ctx, []string{"alt"}, key, func() {
+				a.showPanelAndSwitchTab(idx)
+			}); err != nil {
+				// 单个失败不影响其它（例如系统已被别的程序占用 Alt+N）
+				a.log.Warn("hotkey alt+tab-key register failed", "err", err, "key", key)
+			}
+		}
+	}
+}
+
+// showPanelAndSwitchTab 由 Alt+N 全局快捷键触发：
+// 若窗口未显示则唤起，然后通知前端切到第 idx 个 tab。
+func (a *App) showPanelAndSwitchTab(idx int) {
+	if a.ctx == nil {
+		return
+	}
+	// 唤起窗口（若已显示则保持显示，不要切换隐藏 → 与 togglePanel 不同）
+	// 注意事件顺序：先 emit "tab:switch" 再 emit "window:show"。
+	// 前端 onWindowShow 中需要根据 tab:switch 设置的标志位跳过
+	// "激活时切换至全部分组 / 回到顶部" 这两个副作用，否则会把
+	// 用户刚指定的 tab 反向覆盖回 "全部"。
+	wailsruntime.EventsEmit(a.ctx, "tab:switch", idx)
+	if wailsruntime.WindowIsMinimised(a.ctx) {
+		a.captureFocusBeforeShow()
+		wailsruntime.WindowUnminimise(a.ctx)
+		window.ShowMain(a.ctx)
+		a.positionWindow()
+		a.setVisible(true)
+		wailsruntime.EventsEmit(a.ctx, "window:show")
+	} else if !a.isVisible() {
+		a.captureFocusBeforeShow()
+		window.ShowMain(a.ctx)
+		a.positionWindow()
+		a.setVisible(true)
+		wailsruntime.EventsEmit(a.ctx, "window:show")
+	}
+	// 若窗口已经在前台，上面不会 emit window:show，但 tab:switch 已经发了，
+	// 仍然会切到目标 tab，符合 "按 Alt+N 总是切到 N" 的预期。
 }
 
 func (a *App) runPrune() {
@@ -522,6 +602,16 @@ func (a *App) setVisible(v bool) {
 	a.visMu.Lock()
 	a.windowVisible = v
 	a.visMu.Unlock()
+	if v {
+		// Windows 专用（其他平台是 no-op）：兜底确保系统菜单已删除 + WndProc
+		// 子类化已装上，覆盖应用启动初期的 5s 安装窗口期，用户用 Alt+N 唤起
+		// 的瞬间可能子类化还没装好。内部 sync.Once 保护，多次调用安全。
+		//
+		// 注意：曾经在这里调过 ClearAltMenuState 模拟 Alt 清菜单激活态，但
+		// 该方案会被前端误解读为"用户又按了一次 Alt"，已废弃。系统菜单本身
+		// 被删除后，残留菜单激活态不会再有任何后果，无需主动清。
+		window.EnsureSysMenuSubclass(window.Title)
+	}
 }
 
 func (a *App) isVisible() bool {

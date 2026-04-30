@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "lucide-vue-next": "^1.0.0",
     "vue": "^3.2.37"
   },

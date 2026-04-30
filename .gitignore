@@ -12,6 +12,8 @@ frontend/dist/
 
 # Wails
 frontend/wailsjs/
+# wails 本地生成的 package.json 指纹，每台机器不同，不入库
+frontend/package.json.md5
 
 # IDE
 .vscode/

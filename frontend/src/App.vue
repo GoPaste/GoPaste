@@ -1,5 +1,7 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import hljs from 'highlight.js/lib/common'
+import 'highlight.js/styles/github.css'
 import { t, lang } from './i18n'
 import type { Lang } from './i18n'
 import {
@@ -58,6 +60,7 @@ const favoriteOnly = ref(false)
 const selectedIdx = ref(0)
 const detailContent = ref<string>('')
 const detailVisible = ref(false)
+const detailType = ref<string>('')
 const loading = ref(false)
 
 // 分页
@@ -95,6 +98,17 @@ function scrollToTop() {
   listRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+// 让当前选中项滚动到可视区域内。
+// 用于键盘 ArrowUp/ArrowDown 切换选中时，避免选中跑出视口。
+// 'nearest' 策略：只在不可见时滚动最小距离，已可见则不动，体验最稳。
+async function scrollSelectedIntoView() {
+  await nextTick()
+  const root = listRef.value
+  if (!root) return
+  const el = root.querySelector<HTMLElement>(`.item[data-idx="${selectedIdx.value}"]`)
+  el?.scrollIntoView({ block: 'nearest' })
+}
+
 const typeOptions = computed(() => [
   { key: '' as ItemType | 'fav', label: t('all'), icon: List },
   { key: 'fav' as ItemType | 'fav', label: t('favorite'), icon: Star },
@@ -115,8 +129,12 @@ const typeIconMap: Record<string, any> = {
 
 const selected = computed<Item | undefined>(() => items.value[selectedIdx.value])
 
-async function refresh() {
-  loading.value = true
+async function refresh(opts?: { silent?: boolean }) {
+  // silent=true：切 filter / 切 keyword 等"原地替换"场景，不显示 loading 占位，
+  // 避免列表瞬间清空再填回造成的视觉抖动。
+  // 默认 false：初次加载、增删改后刷新——这些场景需要明确反馈。
+  const silent = opts?.silent === true
+  if (!silent) loading.value = true
   page.value = 1
   try {
     const isFav = typeFilter.value === ('fav' as any)
@@ -132,7 +150,7 @@ async function refresh() {
     if (selectedIdx.value >= items.value.length) selectedIdx.value = 0
     loadThumbs(items.value)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -140,8 +158,39 @@ async function refresh() {
 function clearKeyword() {
   if (!keyword.value) return
   keyword.value = ''
-  refresh()
+  refresh({ silent: true })
   searchRef.value?.focus()
+}
+
+// IME 组合输入状态。中文/日文/韩文等 IME 在拼音→候选→上屏的过程中，
+// 浏览器会在每次按键触发 `input` 事件，但 Vue 的 v-model 默认在 IME
+// composition 期间不更新绑定值（避免脏数据）。如果不区分 composing，
+// 模板里 `@input="refresh(...)"` 会用旧的（空）keyword 反复发起搜索，
+// 而 compositionend 时不一定再触发 input —— 最终用户输入的中文搜索词
+// 一次都不会真正命中。
+//
+// 处理：
+//   - compositionstart → 标记正在组合，input 阶段跳过 refresh
+//   - compositionend  → 解除标记，并手动同步 v-model 与触发一次 refresh
+//     （compositionend 在 Chromium 下 input 事件之前触发，需要主动读 DOM 值）
+const isComposingSearch = ref(false)
+function onSearchCompositionStart() {
+  isComposingSearch.value = true
+}
+function onSearchCompositionEnd(e: CompositionEvent) {
+  isComposingSearch.value = false
+  // 主动把 IME 上屏的最终值同步到 v-model 并触发一次搜索。
+  // 不依赖紧随其后的 input 事件 —— 不同浏览器/IME 时序不一致，
+  // 主动同步能确保最终一次搜索一定执行。
+  const el = e.target as HTMLInputElement | null
+  if (el && keyword.value !== el.value) keyword.value = el.value
+  refresh({ silent: true })
+}
+function onSearchInput() {
+  // composing 中的 input 事件直接丢弃 —— v-model 此时也不会更新值，
+  // 跑 refresh 只会用空 keyword 反复扫库。
+  if (isComposingSearch.value) return
+  refresh({ silent: true })
 }
 
 async function loadMore() {
@@ -200,10 +249,39 @@ function b64ToUtf8(b64: string): string {
   return new TextDecoder('utf-8').decode(bytes)
 }
 
+// HTML 转义。用于非代码场景的纯文本展示防御。
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * 通用代码高亮：基于 highlight.js。
+ * - 若上层指定了 language（来自后端 internal/lang.Detect 的检测结果），走精确 highlight，
+ *   保证详情面板与列表展示同一种语言；
+ * - 否则退化为 highlightAuto 自动识别。
+ * 仅引入 lib/common（覆盖 ~35 种主流语言，体积约 80KB），主题用 GitHub 浅色。
+ * 高亮失败兜底为转义后的纯文本，永远不会破坏 DOM。
+ */
+function highlightCode(src: string, lang?: string): string {
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(src, { language: lang, ignoreIllegals: true }).value
+    }
+    return hljs.highlightAuto(src).value
+  } catch {
+    return escapeHtml(src)
+  }
+}
+
 // 详情类型
 const detailIsImage = ref(false)
+// 详情面板当前条目的语言（由 showDetail 设置；为 hljs 已知语言时强制按其高亮，
+// 与列表的 metaParts 显示保持一致；其它语言由 highlightCode 自动检测兜底）。
+const detailLanguage = ref<string>('')
 
 async function showDetail(it: Item) {
+  detailType.value = it.type
+  detailLanguage.value = it.language || ''
   try {
     // 图片类型：应用内预览
     if (it.type === 'image') {
@@ -248,6 +326,8 @@ async function doCopy(it: Item) { await CopyToClipboard(it.id) }
 
 // 粘贴触发方式：'single' 单击立即粘贴 | 'double' 双击粘贴（默认，单击仅选中）
 const pasteTrigger = ref<'single' | 'double'>('double')
+// 是否启用 Alt+1..6 全局/应用内切分类热键。后端配置同名字段镜像，关闭后两端一并生效。
+const tabHotkeysEnabled = ref(true)
 // 单击模式下的延时触发器：区分单击/双击（双击时取消单击的 doPaste）
 let singleClickTimer: number | null = null
 const DBLCLICK_THRESHOLD_MS = 250
@@ -417,6 +497,7 @@ async function loadSettings() {
     applyTheme(s?.theme || 'dark')
     if (s?.language) lang.value = s.language as Lang
     pasteTrigger.value = (s?.pasteTrigger === 'single' ? 'single' : 'double')
+    tabHotkeysEnabled.value = s?.tabHotkeysEnabled !== false // 缺失/旧配置默认 true
     return s
   } catch { return null }
 }
@@ -428,6 +509,15 @@ async function loadSettings() {
 // 这样拖窗口时不会误重置筛选/滚动位置。
 async function onWindowShow() {
   if (view.value !== 'main') return
+  // 若本次激活是由 Alt+`/Alt+1..6 触发的 → 用户明确指定了分类，
+  // "激活时切换至全部分组 / 回到顶部"应该让位给用户的指定，避免反向覆盖。
+  // 用时间窗口判断而非"消费一次即清"，因为 Windows 下窗口激活
+  // 可能同时触发后端 emit 的 window:show 与浏览器原生 visibilitychange，
+  // 一次激活 = 多次回调，必须在整段时间内都跳过。
+  if (Date.now() < suppressActivateUntil) {
+    searchRef.value?.focus()
+    return
+  }
   const s: any = await GetSettings()
   if (!s) return
   let needRefresh = false
@@ -435,7 +525,7 @@ async function onWindowShow() {
     typeFilter.value = ''
     needRefresh = true
   }
-  if (needRefresh) await refresh()
+  if (needRefresh) await refresh({ silent: true })
   if (s.scrollTopOnShow) {
     selectedIdx.value = 0
     listRef.value?.scrollTo({ top: 0 })
@@ -443,6 +533,11 @@ async function onWindowShow() {
   // 聚焦搜索框
   searchRef.value?.focus()
 }
+
+// 由 'tab:switch' 事件设置：Date.now() < 此值 时跳过激活副作用。
+// 用时间戳而非布尔，是为了应对一次激活触发多次 onWindowShow 的情况
+// （后端 EventsEmit window:show + 浏览器原生 visibilitychange）。
+let suppressActivateUntil = 0
 
 function onVisibilityChange() {
   if (document.visibilityState === 'visible') {
@@ -460,7 +555,20 @@ function switchFilter(dir: number) {
   const opts = typeOptions.value
   const newIdx = (filterIdx.value + dir + opts.length) % opts.length
   typeFilter.value = opts[newIdx].key as any
-  refresh()
+  refresh({ silent: true })
+}
+
+// Alt+1..6 → 对应分类（收藏/文本/图片/文件/链接/代码）
+// 索引与 typeOptions 中的顺序一致：0=全部, 1=收藏, 2=文本, 3=图片, 4=文件, 5=链接, 6=代码
+// 与 onWindowShow 中"typeFilter 没变就不 refresh"的逻辑保持一致 ——
+// 否则用户在已选中的分类上重复按 Alt+N 会触发无意义的 loading 闪烁。
+function switchFilterByIndex(idx: number) {
+  const opts = typeOptions.value
+  if (idx < 0 || idx >= opts.length) return
+  const next = opts[idx].key as any
+  if (typeFilter.value === next) return // 已在此分类，无需重拉
+  typeFilter.value = next
+  refresh({ silent: true })
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -473,21 +581,74 @@ function onKeyDown(e: KeyboardEvent) {
     return
   }
 
+  // Alt+1..6：快速切换到对应的分类 tab
+  // 优先级最高，避免被搜索框输入吞掉
+  // - Alt+1..6 → 收藏/文本/图片/文件/链接/代码 (idx=1..6)
+  // 注：Alt+0/"全部" 不再绑定 —— 由主热键唤起即可
+  // 受 tabHotkeysEnabled 开关控制：关掉后应用内也不再拦截，与全局热键行为一致。
+  if (tabHotkeysEnabled.value && e.altKey && !e.ctrlKey && !e.metaKey) {
+    if (/^[1-6]$/.test(e.key)) {
+      const n = parseInt(e.key, 10)
+      if (n < typeOptions.value.length) {
+        e.preventDefault()
+        switchFilterByIndex(n)
+        return
+      }
+    }
+    // Alt+Space 兜底（仅 Windows 场景需要，跨平台代码无副作用）：
+    // 真正的根因在 Win32 消息层 —— 全局热键消费 Alt 后窗口侧菜单激活态没被清，
+    // 后续按 Space 会被 OS 派发为 WM_SYSCOMMAND(SC_KEYMENU) 弹出系统菜单。
+    // 主修复在 internal/window/sysmenu_windows.go（子类化拦截 SC_KEYMENU）。
+    // 这里保留 JS 兜底用于覆盖窗口子类化尚未装上的极短启动窗口期，
+    // 命中时退化为预览动作。
+    if (e.key === ' ') {
+      e.preventDefault()
+      if (selected.value) {
+        if (detailVisible.value) detailVisible.value = false
+        else showDetail(selected.value)
+      }
+      return
+    }
+  }
+
   // 搜索框获焦时不拦截左右键
-  const inSearch = (e.target as HTMLElement)?.tagName === 'INPUT'
+  const targetEl = e.target as HTMLElement | null
+  const inSearch = targetEl?.tagName === 'INPUT'
+  // 搜索框已有输入内容时（如用户正在搜"foo bar"），空格应作为普通字符输入，
+  // 不触发预览；仅当搜索框为空时才把空格升级为"预览"快捷键。
+  // 背景：窗口唤起时焦点默认在搜索框，若无此判断则空格会被直接吞成预览动作，
+  // 用户无法在搜索时输入空格。
+  const searchHasValue = inSearch && !!(targetEl as HTMLInputElement | null)?.value
 
   if (e.key === 'Tab') {
     e.preventDefault()
     switchFilter(e.shiftKey ? -1 : 1)
-  } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !inSearch) {
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // 左右键：切换 filter tab。
+    // 历史版本曾用 !inSearch 限制——焦点在搜索框时退化为光标移动；
+    // 但搜索框是默认获焦点，导致用户冷启动后按左右键完全无反应（必须先用
+    // 鼠标点窗口移走焦点才行）。改为：搜索框为空时一律切 tab；搜索框
+    // 有内容时才让左右键作为光标移动（用户正在编辑，更需要光标控制）。
+    if (inSearch && searchHasValue) return
     e.preventDefault()
     switchFilter(e.key === 'ArrowLeft' ? -1 : 1)
   } else if (e.key === 'ArrowDown') {
     selectedIdx.value = Math.min(selectedIdx.value + 1, items.value.length - 1)
     e.preventDefault()
+    scrollSelectedIntoView()
   } else if (e.key === 'ArrowUp') {
     selectedIdx.value = Math.max(selectedIdx.value - 1, 0)
     e.preventDefault()
+    scrollSelectedIntoView()
+  } else if (e.key === ' ' && !searchHasValue && selected.value) {
+    // 空格键：预览/关闭详情面板（夹在"选择"与"粘贴"之间的轻量查看动作）。
+    // - 搜索框"有内容"时放行，让空格作为搜索词的一部分输入
+    // - 搜索框为空或焦点不在搜索框 → 拦截为预览快捷键
+    // - 详情已打开则再次按空格关闭，形成 toggle 体验
+    // - preventDefault 避免触发页面滚动
+    e.preventDefault()
+    if (detailVisible.value) detailVisible.value = false
+    else showDetail(selected.value)
   } else if (e.key === 'Enter' && selected.value) {
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
@@ -511,12 +672,31 @@ onMounted(async () => {
   // 监听后端 emit 的 window:show 事件——Windows 上 visibilitychange 不一定触发，
   // 需要后端显式通知才能执行"激活时回到顶部 / 切换至全部分组"等功能。
   EventsOn('window:show', () => { onWindowShow() })
+  // 全局 Alt+`/Alt+1..6 唤起并切到第 N 个 tab：后端 hotkey.Manager 注册的系统级快捷键
+  // 即使应用未聚焦也能命中，命中后唤起面板并 emit 此事件。
+  EventsOn('tab:switch', (idx: number) => {
+    if (typeof idx !== 'number') return
+    // 用户用 Alt+N 明确指定了分类 → 让接下来这段时间内的窗口激活
+    // 跳过 "切换至全部分组 / 回到顶部" 副作用，避免反向覆盖。
+    // 600ms 经验值：覆盖 window:show 事件 + visibilitychange 双触发的时间差。
+    suppressActivateUntil = Date.now() + 600
+    // 设置页时也允许切换：先回到主列表，再切 tab，符合"快捷键即唤起"的预期
+    if (view.value !== 'main') view.value = 'main'
+    switchFilterByIndex(idx)
+  })
   await loadSettings()
   // loadSettings → applyTheme 已调 syncWebViewBg，这里再兜底一次确保初始化正确
   syncWebViewBg()
   await refresh()
   EventsOn('clipboard:new', async () => { await refresh() })
-  unsubscribe = () => { EventsOff('clipboard:new'); EventsOff('window:show') }
+  unsubscribe = () => { EventsOff('clipboard:new'); EventsOff('window:show'); EventsOff('tab:switch') }
+
+  // 冷启动焦点：由 Go 端 domReady 在窗口可见时主动 emit 'window:show'，
+  // 走和热启动一致的 onWindowShow 路径（聚焦搜索框、激活副作用）。
+  // 之前在这里加 setTimeout focus 是无效的——冷启动时 webview 进程根本没
+  // 拿到键盘焦点（background process 限制），DOM focus 只改 activeElement，
+  // OS 不会把键盘消息派给我们。必须由 Go 端 forceForeground 抢前台后，
+  // 浏览器层的 focus() 才有意义。详见 internal/window/showhide_windows.go。
 })
 
 onUnmounted(() => {
@@ -557,9 +737,35 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// 后端语言名（小写，由 internal/lang.Detect 返回，详见 chroma 与启发式规则）
+// → 前端展示名映射。未命中走首字母大写兜底；空串显示通用 Code。
+const LANG_LABEL: Record<string, string> = {
+  javascript: 'JavaScript', typescript: 'TypeScript', python: 'Python', go: 'Go',
+  java: 'Java', kotlin: 'Kotlin', swift: 'Swift', rust: 'Rust',
+  c: 'C', 'c++': 'C++', cpp: 'C++', csharp: 'C#', objectivec: 'Objective-C',
+  ruby: 'Ruby', php: 'PHP', shell: 'Shell', bash: 'Bash',
+  sql: 'SQL', json: 'JSON', yaml: 'YAML', xml: 'XML', html: 'HTML', css: 'CSS', scss: 'SCSS',
+  markdown: 'Markdown', dockerfile: 'Dockerfile', makefile: 'Makefile',
+  ini: 'INI', toml: 'TOML', diff: 'Diff', plaintext: 'Text',
+}
+// 把后端 it.language 转成显示标签。后端会主动放弃低置信度内容（含中文笔记），
+// 因此空值 → "Code"，避免 hljs.highlightAuto 在前端再来一次（性能/一致性双赢）。
+function detectLanguage(it: Item): string {
+  const name = (it.language || '').toLowerCase()
+  if (!name) return 'Code'
+  return LANG_LABEL[name] || (name.charAt(0).toUpperCase() + name.slice(1))
+}
+
 function metaParts(it: Item): string[] {
-  const parts: string[] = [typeLabel.value[it.type] || it.type]
-  if (it.size) parts.push(formatSize(it.size))
+  // code 类型用语言名替代类型标签；其它类型显示类型标签
+  const parts: string[] = it.type === 'code'
+    ? [detectLanguage(it)]
+    : [typeLabel.value[it.type] || it.type]
+  // 文件大小（XX B / KB）仅对 image / file 类型有意义——
+  // 文本/链接/代码看字符数即可，字节数对用户没参考价值且属于视觉噪声。
+  if ((it.type === 'image' || it.type === 'file') && it.size) {
+    parts.push(formatSize(it.size))
+  }
   if (it.type === 'file' && it.charCount) {
     parts.push(t('nFiles', { n: it.charCount }))
   } else if (it.charCount && it.type !== 'image') {
@@ -590,7 +796,15 @@ function onWindowBlur() {
       <header class="topbar drag-region">
         <div class="search">
           <Search :size="16" class="search-icon" />
-          <input ref="searchRef" v-model="keyword" :placeholder="t('search')" @input="refresh" autofocus />
+          <input
+            ref="searchRef"
+            v-model="keyword"
+            :placeholder="t('search')"
+            @input="onSearchInput"
+            @compositionstart="onSearchCompositionStart"
+            @compositionend="onSearchCompositionEnd"
+            autofocus
+          />
           <button
             v-if="keyword"
             class="search-clear"
@@ -610,9 +824,19 @@ function onWindowBlur() {
       </header>
 
       <nav class="filters drag-region">
-        <button v-for="opt in typeOptions" :key="opt.key"
+        <!--
+          @mousedown.prevent: 阻止鼠标点击让 <button> 获得焦点。
+          原生 <button> 获焦后，按空格在 HTML 层会触发 click（吞掉预览快捷键）；
+          更严重的是 Windows WebView2 下，带 Alt 的组合键被 preventDefault 后
+          Alt 的 keyup 偶发不上报，此时再按空格会被 OS 当成 Alt+Space → 弹出
+          "还原/移动/大小/最小化/最大化/关闭"系统菜单。让按钮永不获焦即可绕开。
+        -->
+        <button v-for="(opt, idx) in typeOptions" :key="opt.key"
           :class="{ active: typeFilter === opt.key }"
-          @click="typeFilter = opt.key as any; refresh()">
+          :title="idx === 0 ? opt.label : `${opt.label} (Alt+${idx})`"
+          tabindex="-1"
+          @mousedown.prevent
+          @click="typeFilter = opt.key as any; refresh({ silent: true }); ($event.currentTarget as HTMLElement).blur()">
           <component :is="opt.icon" :size="13" />
           <span>{{ opt.label }}</span>
         </button>
@@ -627,6 +851,7 @@ function onWindowBlur() {
         </div>
 
         <div v-for="(it, idx) in items" :key="it.id" class="item"
+          :data-idx="idx"
           :class="{ active: idx === selectedIdx, pinned: it.pinned }"
           @click="onItemClick(idx, it)" @dblclick="onItemDblClick(it)"
           @contextmenu="onItemContextMenu($event, it)">
@@ -720,7 +945,8 @@ function onWindowBlur() {
             <button @click="detailVisible = false"><Trash2 :size="0" /><span style="font-size:16px;color:#a8adbd;cursor:pointer">✕</span></button>
           </div>
           <div class="detail-body">
-            <pre>{{ detailContent }}</pre>
+            <pre v-if="detailType === 'code'" class="code-hl hljs" v-html="highlightCode(detailContent, detailLanguage)"></pre>
+            <pre v-else>{{ detailContent }}</pre>
           </div>
         </div>
       </div>
@@ -967,6 +1193,16 @@ html, body, #app {
 .detail-body { padding: 14px; overflow: auto; text-align: left; }
 .detail-body pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; color: var(--text); text-align: left; }
 .detail-body img { max-width: 100%; border-radius: 6px; }
+
+/* 代码高亮：仅 code 类型条目使用，token 颜色由 highlight.js 的 GitHub 主题提供。
+   这里只覆写字体/行距，并把主题默认的灰底改为透明，融入 .detail 面板背景。 */
+.detail-body pre.code-hl {
+  font-family: 'SF Mono', 'Consolas', 'Menlo', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: transparent;
+  padding: 0;
+}
 
 /* 图片纯预览（无边框） */
 .detail-img-only {

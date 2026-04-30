@@ -13,6 +13,8 @@ import {
 import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
   Download, Trash2, Info, Database, X, AlertTriangle,
+  Star, FileText, Image as ImageIcon, File as FileIcon,
+  Link as LinkIcon, Code2,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
@@ -46,6 +48,7 @@ const form = reactive({
   showTaskbarIcon: false,
   trayIconStyle: 'color' as 'color' | 'gray',
   autoStart: false,
+  tabHotkeysEnabled: true,
 })
 
 const dataDir = ref('')
@@ -93,6 +96,34 @@ const hotkeyDisplay = computed(() => {
   return parts.join(' + ')
 })
 
+// 切换分类的固定快捷键。
+// keyDisplay 仅作展示用——实际绑定在后端 hotkey.Manager 与 App.vue 的 onKeyDown 中。
+// 与 App.vue 的 typeOptions 顺序保持一致（1..6=收藏/文本/图片/文件/链接/代码）。
+// 注：0="全部" 不在此列表 —— 由主热键直接唤起，无需独立分类热键。
+const tabShortcuts = computed(() => [
+  { keys: ['Alt + 1'], label: t('favorite'), icon: Star },
+  { keys: ['Alt + 2'], label: t('text'), icon: FileText },
+  { keys: ['Alt + 3'], label: t('image'), icon: ImageIcon },
+  { keys: ['Alt + 4'], label: t('file'), icon: FileIcon },
+  { keys: ['Alt + 5'], label: t('link'), icon: LinkIcon },
+  { keys: ['Alt + 6'], label: t('code'), icon: Code2 },
+])
+
+// 应用内快捷键。仅在主面板有焦点时生效，不参与全局热键注册。
+// keys 多按键以 sep（默认 '/'）分隔展示，表示"任一可用"。
+// 与 App.vue::onKeyDown 中的实际绑定保持同步，改一处需要同改另一处。
+const appShortcuts = computed(() => [
+  { label: t('appSwitchTab'),  keys: ['Tab', 'Shift + Tab', '←', '→'] },
+  { label: t('appMoveSelect'), keys: ['↑', '↓'] },
+  // 空格：在"选择"和"粘贴"之间，用于预览/关闭详情面板。
+  // 与 App.vue::onKeyDown 中的实际绑定保持同步——仅当搜索框为空时
+  // 才升级为预览快捷键，否则作为普通字符输入。
+  { label: t('appPreview'),    keys: ['Space'] },
+  { label: t('appPaste'),      keys: ['Enter'] },
+  { label: t('appDelete'),     keys: ['Delete'] },
+  { label: t('appClose'),      keys: ['Esc'] },
+])
+
 function setLang(v: Lang) {
   form.language = v
   lang.value = v
@@ -121,6 +152,7 @@ async function load() {
   form.showTaskbarIcon = !!s.showTaskbarIcon
   form.trayIconStyle = (s.trayIconStyle === 'gray' ? 'gray' : 'color')
   form.autoStart = !!s.autoStart
+  form.tabHotkeysEnabled = s.tabHotkeysEnabled !== false // 缺失/旧配置默认开启
   dataDir.value = await DataDir()
   try { appVersion.value = await GetAppVersion() } catch {}
   // load 完成后再允许自动保存，避免 watch 初始触发回写
@@ -146,6 +178,7 @@ async function autoSave() {
       showTaskbarIcon: form.showTaskbarIcon,
       trayIconStyle: form.trayIconStyle,
       autoStart: form.autoStart,
+      tabHotkeysEnabled: form.tabHotkeysEnabled,
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => { saveMsg.value = '' }, 1500)
@@ -181,6 +214,7 @@ watchImmediate(() => form.showTrayIcon)
 watchImmediate(() => form.showTaskbarIcon)
 watchImmediate(() => form.trayIconStyle)
 watchImmediate(() => form.autoStart)
+watchImmediate(() => form.tabHotkeysEnabled)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
 // 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
@@ -412,6 +446,47 @@ onMounted(load)
               @blur="recording = false">
               <span v-if="recording" class="rec-hint">{{ t('pressCombo') }}</span>
               <span v-else class="hotkey-display">{{ hotkeyDisplay }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">{{ t('switchTabTitle') }}</div>
+        <div class="section-card">
+          <div class="card-row">
+            <div>
+              <span>{{ t('tabHotkeysEnabled') }}</span>
+              <p class="desc-inline">{{ t('switchTabDesc') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.tabHotkeysEnabled" /><span class="slider"></span></label>
+          </div>
+          <div v-for="s in tabShortcuts" :key="s.label" class="card-row" :class="{ disabled: !form.tabHotkeysEnabled }">
+            <div class="tab-shortcut-label">
+              <component :is="s.icon" :size="16" />
+              <span>{{ s.label }}</span>
+            </div>
+            <div class="kbd-group">
+              <template v-for="(k, i) in s.keys" :key="k">
+                <span v-if="i > 0" class="kbd-sep">/</span>
+                <kbd class="kbd">{{ k }}</kbd>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- 应用内快捷键：仅在面板内生效，不参与全局注册，无需开关。
+             视觉上与上方"全局/分类"快捷键区分：左侧纯文字标签（无图标），右侧 kbd 徽章风格。 -->
+        <div class="section-title">{{ t('appShortcutsTitle') }}</div>
+        <div class="section-card">
+          <div class="card-row stack">
+            <p class="desc-inline">{{ t('appShortcutsDesc') }}</p>
+          </div>
+          <div v-for="s in appShortcuts" :key="s.label" class="card-row">
+            <span class="app-shortcut-label">{{ s.label }}</span>
+            <div class="kbd-group">
+              <template v-for="(k, i) in s.keys" :key="k">
+                <span v-if="i > 0" class="kbd-sep">/</span>
+                <kbd class="kbd">{{ k }}</kbd>
+              </template>
             </div>
           </div>
         </div>
@@ -652,20 +727,78 @@ onMounted(load)
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* 可编辑快捷键录制框：用 accent 蓝色边框 + 蓝字，明确"可点击修改"。
+   与下方只读快捷键（黑字灰边）形成视觉区分。
+   注：默认蓝态与录制橙态都使用 2px 边框；为抵消蓝色饱和度低于橙色带来的"边框看起来偏细"
+   的视觉错觉，额外叠一层同色 inset shadow，让两态感知粗度一致。 */
 .hotkey-recorder {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px; margin-top: 4px;
-  background: var(--bg-elevated); border: 2px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  /* 固定宽高（非 min-*），保证三态尺寸完全一致：
+     - 默认态 "Alt + `"（短）
+     - 录制态 "Press shortcut..."（长，且 .rec-hint 带 pulse 动画）
+     - 长组合态 "Ctrl + Shift + Alt + V"（更长）
+     宽 160px 容下常见提示文案与 4 键组合；高 40px 与下方 toggle 开关行视觉等高，
+     防止点击后内容微小行高差导致整页内容跳动。
+     box-sizing: border-box 保证 2px 边框不会让总尺寸变成 164×44。 */
+  width: 160px;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 14px; margin-top: 4px;
+  background: var(--bg-elevated);
+  border: 2px solid var(--accent);
+  box-shadow: inset 0 0 0 0.5px var(--accent);
   border-radius: 8px; cursor: pointer; transition: all .2s; outline: none;
   user-select: none;
 }
-.hotkey-recorder:hover { border-color: var(--accent); }
-.hotkey-recorder.recording { border-color: var(--warning); background: var(--bg-elevated); }
+.hotkey-recorder:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+  border-color: var(--accent-hover);
+  box-shadow: inset 0 0 0 0.5px var(--accent-hover);
+}
+.hotkey-recorder.recording {
+  border-color: var(--warning);
+  background: var(--bg-elevated);
+  box-shadow: inset 0 0 0 0.5px var(--warning);
+}
+.hotkey-recorder.recording .hotkey-display { color: var(--warning); }
 .hotkey-display {
-  font-size: 12px; font-weight: 600; color: var(--text);
+  font-size: 12px; font-weight: 600;
+  color: var(--accent);
   font-family: 'SF Mono', 'Consolas', monospace; letter-spacing: 1px;
   white-space: nowrap;
 }
+.tab-shortcut-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text);
+}
+
+/* 只读快捷键徽章：用于「切换分类（Alt+1..6）」「应用内快捷键」等所有不可修改的展示。
+   与可编辑的 .hotkey-recorder（蓝边蓝字）形成对比，统一弱化为浅色 kbd 风格。
+   - 单键：小圆角 + 浅边框 + 双层下边框模拟实体键
+   - 多键：以 / 分隔，紧凑居右 */
+.app-shortcut-label {
+  font-size: 13px; color: var(--text-muted);
+}
+.kbd-group {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; justify-content: flex-end;
+}
+.kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 2px 8px;
+  font-size: 11px; font-weight: 600;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+}
+.kbd-sep { font-size: 11px; color: var(--text-muted); user-select: none; }
 .rec-hint { font-size: 12px; color: var(--warning); animation: pulse 1s infinite; white-space: nowrap; }
 .rec-label { font-size: 11px; color: var(--text-muted); margin-left: auto; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }

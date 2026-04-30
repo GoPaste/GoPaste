@@ -28,4 +28,10 @@ func ApplyOptions(opts *options.App) {
 	}
 	// 在 wails 创建窗口后，通过 DWM API 为 Win11 添加原生圆角
 	ApplyWin11RoundCorners(opts.Title)
+	// 屏蔽 Alt+Space 弹出的 Win32 系统菜单。
+	// 触发场景：用户用全局热键 Alt+5 唤起窗口后，OS 内部 Alt 的 keyup
+	// 没派发到窗口消息循环 → 窗口"以为 Alt 还按着" → 接下来按 Space 被
+	// 解读为 Alt+Space → 弹出还原/移动/最小化/最大化/关闭菜单。
+	// 详见 sysmenu_windows.go 内的注释。
+	DisableAltSpaceSysMenu(opts.Title)
 }

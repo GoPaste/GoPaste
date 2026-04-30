@@ -16,6 +16,7 @@ import (
 
 	"golang.design/x/clipboard"
 
+	"gopaste/internal/lang"
 	"gopaste/internal/storage"
 	"gopaste/internal/types"
 )
@@ -139,6 +140,11 @@ func (w *Watcher) handle(t types.ItemType, raw []byte) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
+	// 仅 code 类型预先识别语言并落库，避免每次列表渲染都在前端跑 hljs 检测。
+	// 详见 internal/lang/detect.go：对中文笔记类内容会主动放弃识别避免误判。
+	if t == types.TypeCode {
+		item.Language = lang.Detect(string(raw))
+	}
 	select {
 	case w.out <- item:
 	default:
@@ -176,6 +182,12 @@ func typeOfText(b []byte) types.ItemType {
 	// URL
 	if u, err := url.ParseRequestURI(s); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
 		return types.TypeLink
+	}
+	// 中文为主的内容（笔记 / 聊天 / 文档），即使含 = 和换行也不应判为 code。
+	// 与 lang.Detect 第一道自然语言保护同构，避免出现"分类是 Code 但识别不出语言"
+	// 而最终展示通用 Code 标签的体验问题（详见 docs/todo.md）。
+	if lang.IsMostlyCJK(s) {
+		return types.TypeText
 	}
 	// 代码启发：包含常见符号 + 换行
 	if strings.Contains(s, "\n") && strings.ContainsAny(s, "{};=") {
