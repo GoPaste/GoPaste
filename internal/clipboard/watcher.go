@@ -58,6 +58,20 @@ func (w *Watcher) Start(ctx context.Context) error {
 		return fmt.Errorf("clipboard: init: %w", err)
 	}
 
+	// 先同步读一次当前剪贴板内容，把内容 hash 作为 lastSig 初值。
+	// 目的：防止启动后首个 tick 把"启动前就已存在于系统剪贴板里的内容"
+	// 当成一次新复制入库（症状：清空数据 + 重启后，凭空复现最后一条记录）。
+	//
+	// 为什么不在 textwatch/imagewatch 里用 pasteboardChangeCount 作 baseline：
+	// 那样会与"App 启动期间用户刚好复制"形成 race —— baseline 采到的
+	// changeCount 已经包含了用户这次复制，tick 阶段 cc == prev 就不会派发，
+	// 表现为"偶现首次复制丢失"。用内容 hash 做 baseline 没有这个窗口：
+	// 用户复制的新内容 hash 与历史残留 hash 不同，会正常派发。
+	//
+	// 只在 Start 最开始调用这一次，此时 FileWatcher/ImageWatch 都还没跑，
+	// 不存在并发竞态。
+	w.bootstrapFromClipboard()
+
 	textCh := startTextWatch(ctx)
 	// 图片监听走平台特化实现（见 imagewatch_{darwin,other}.go）。
 	// darwin 上 golang.design/x/clipboard 只识别 public.png，漏掉系统截图
@@ -66,6 +80,26 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 	go w.loop(ctx, textCh, imageCh)
 	return nil
+}
+
+// bootstrapFromClipboard 把当前系统剪贴板内容的 hash 预先塞进 lastSig，
+// 使得启动后首次读到的若是"启动前残留"会被 hash 去重，不会入库。
+// 取剪贴板里"最新"那份内容的 hash：优先图片（图片 + 文件路径文本通常
+// 伴生出现，文件路径文本并不稳定；而图片内容是稳定指纹）。
+func (w *Watcher) bootstrapFromClipboard() {
+	text, image := snapshotCurrentClipboard()
+	var baseline []byte
+	switch {
+	case len(image) > 0:
+		baseline = image
+	case len(text) > 0:
+		baseline = text
+	default:
+		return
+	}
+	w.mu.Lock()
+	w.lastSig = storage.HashBytes(baseline)
+	w.mu.Unlock()
 }
 
 func (w *Watcher) loop(ctx context.Context, textCh, imageCh <-chan []byte) {
@@ -129,6 +163,14 @@ func (w *Watcher) handle(t types.ItemType, raw []byte) {
 	}
 	w.lastSig = hash
 	w.mu.Unlock()
+
+	// 不在这里做"吞掉首次事件"的 bootstrap 兜底：
+	//   - darwin：startTextWatch / startImageWatch 已用 pasteboardChangeCount
+	//     作为 baseline，textCh/imageCh 天然只派发"启动之后"的变更；
+	//   - 非 darwin：golang.design/x/clipboard.Watch 内部同样只比较 changeCount
+	//     变化，不会重放启动前的残留。
+	// 若在此再加 bootstrapped 吞掉首帧，会误伤用户启动后的第一次真正复制
+	// （表现为首次复制不同步到 GoPaste）。
 
 	item := types.Item{
 		Hash:      hash,

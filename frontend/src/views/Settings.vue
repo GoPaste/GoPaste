@@ -1,12 +1,14 @@
 <script lang="ts" setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   GetSettings,
   UpdateSettings,
   ExportData,
+  ExportDataToFile,
   ClearHistory,
   DataDir,
   GetAppVersion,
+  GetWebsite,
   CheckForUpdate,
   OpenURL,
 } from '../../wailsjs/go/main/App'
@@ -59,6 +61,7 @@ const loaded = ref(false)
 
 // 关于页：版本号 + 检查更新
 const appVersion = ref('0.0.0')
+const websiteUrl = ref('https://gopaste.wetools.cc/')
 const updateChecking = ref(false)
 const updateMsg = ref('')
 const updateHasNew = ref(false)
@@ -100,13 +103,16 @@ const hotkeyDisplay = computed(() => {
 // keyDisplay 仅作展示用——实际绑定在后端 hotkey.Manager 与 App.vue 的 onKeyDown 中。
 // 与 App.vue 的 typeOptions 顺序保持一致（1..6=收藏/文本/图片/文件/链接/代码）。
 // 注：0="全部" 不在此列表 —— 由主热键直接唤起，无需独立分类热键。
+// macOS 上 Option(Alt)+数字 被系统拦截，改用 Cmd+数字。
+const isMac = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
+const tabModKey = isMac ? 'Cmd' : 'Alt'
 const tabShortcuts = computed(() => [
-  { keys: ['Alt + 1'], label: t('favorite'), icon: Star },
-  { keys: ['Alt + 2'], label: t('text'), icon: FileText },
-  { keys: ['Alt + 3'], label: t('image'), icon: ImageIcon },
-  { keys: ['Alt + 4'], label: t('file'), icon: FileIcon },
-  { keys: ['Alt + 5'], label: t('link'), icon: LinkIcon },
-  { keys: ['Alt + 6'], label: t('code'), icon: Code2 },
+  { keys: [`${tabModKey} + 1`], label: t('favorite'), icon: Star },
+  { keys: [`${tabModKey} + 2`], label: t('text'), icon: FileText },
+  { keys: [`${tabModKey} + 3`], label: t('image'), icon: ImageIcon },
+  { keys: [`${tabModKey} + 4`], label: t('file'), icon: FileIcon },
+  { keys: [`${tabModKey} + 5`], label: t('link'), icon: LinkIcon },
+  { keys: [`${tabModKey} + 6`], label: t('code'), icon: Code2 },
 ])
 
 // 应用内快捷键。仅在主面板有焦点时生效，不参与全局热键注册。
@@ -119,8 +125,12 @@ const appShortcuts = computed(() => [
   // 与 App.vue::onKeyDown 中的实际绑定保持同步——仅当搜索框为空时
   // 才升级为预览快捷键，否则作为普通字符输入。
   { label: t('appPreview'),    keys: ['Space'] },
+  // 双击空格：按选中项类型分发到"专属操作"——image→保存、file→在文件夹中显示、link→浏览器打开。
+  // text/code 等无专属动作的类型不进双击窗口（见 App.vue::hasPrimaryAction）。
+  // 两个 Space 是"先后连按"语义，故用空串 sep（不走默认的"/"任一分隔符）。
+  { label: t('appPrimaryAction'), keys: ['Space', 'Space'], sep: '' },
   { label: t('appPaste'),      keys: ['Enter'] },
-  { label: t('appDelete'),     keys: ['Delete'] },
+  { label: t('appDelete'),     keys: ['Delete', 'Backspace'] },
   { label: t('appClose'),      keys: ['Esc'] },
 ])
 
@@ -155,6 +165,7 @@ async function load() {
   form.tabHotkeysEnabled = s.tabHotkeysEnabled !== false // 缺失/旧配置默认开启
   dataDir.value = await DataDir()
   try { appVersion.value = await GetAppVersion() } catch {}
+  try { websiteUrl.value = await GetWebsite() } catch {}
   // load 完成后再允许自动保存，避免 watch 初始触发回写
   loaded.value = true
 }
@@ -220,14 +231,7 @@ watchImmediate(() => form.hotkeyModifiers.join('+'))
 // 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
 
 async function doExport() {
-  const json = await ExportData()
-  const blob = new Blob([json], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `GoPaste-export-${Date.now()}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  await ExportDataToFile()
 }
 
 async function doClear() {
@@ -249,6 +253,26 @@ function showConfirm(msg: string): Promise<boolean> {
 }
 function onConfirmOk() { confirmVisible.value = false; confirmResolve?.(true) }
 function onConfirmCancel() { confirmVisible.value = false; confirmResolve?.(false) }
+
+// 确认弹窗显示期间接管键盘：Enter=确认 / Esc=取消。
+// 用 capture 阶段 + stopPropagation 吞掉所有其他键，防止冒到输入框/按钮的原生行为
+// （例如弹框时 Delete/Backspace 不应触发数字输入框的清空、Esc 不应触发其他层级的关闭）。
+function onConfirmKey(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault(); e.stopPropagation()
+    onConfirmOk()
+  } else if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation()
+    onConfirmCancel()
+  } else {
+    e.preventDefault(); e.stopPropagation()
+  }
+}
+watch(confirmVisible, (v) => {
+  if (v) window.addEventListener('keydown', onConfirmKey, true)
+  else window.removeEventListener('keydown', onConfirmKey, true)
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onConfirmKey, true))
 
 function startRecording() { recording.value = true }
 
@@ -483,8 +507,8 @@ onMounted(load)
           <div v-for="s in appShortcuts" :key="s.label" class="card-row">
             <span class="app-shortcut-label">{{ s.label }}</span>
             <div class="kbd-group">
-              <template v-for="(k, i) in s.keys" :key="k">
-                <span v-if="i > 0" class="kbd-sep">/</span>
+              <template v-for="(k, i) in s.keys" :key="i">
+                <span v-if="i > 0 && (s.sep ?? '/') !== ''" class="kbd-sep">{{ s.sep ?? '/' }}</span>
                 <kbd class="kbd">{{ k }}</kbd>
               </template>
             </div>
@@ -580,7 +604,8 @@ onMounted(load)
         </div>
         <div class="about-links">
           <div class="link-row"><span class="link-label">{{ t('techStack') }}</span><span>Go · Vue 3 · Wails · SQLite</span></div>
-          <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>MIT</span></div>
+          <div class="link-row"><span class="link-label">{{ t('website') }}</span><a class="about-link" :href="websiteUrl" target="_blank" rel="noopener noreferrer">{{ websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') }}</a></div>
+          <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>Apache-2.0</span></div>
         </div>
       </div>
     </main>
@@ -778,10 +803,13 @@ onMounted(load)
    - 多键：以 / 分隔，紧凑居右 */
 .app-shortcut-label {
   font-size: 13px; color: var(--text-muted);
+  /* 允许文案在键帽组占用空间后自适应换行，避免把键帽挤到下一行 */
+  flex: 1 1 auto; min-width: 0; line-height: 1.5;
 }
 .kbd-group {
   display: inline-flex; align-items: center; gap: 6px;
-  flex-wrap: wrap; justify-content: flex-end;
+  /* 键帽组作为整体不收缩、不换行——宁可让左侧文案换行，也要保证多个键帽横排 */
+  flex: 0 0 auto; flex-wrap: nowrap; justify-content: flex-end;
 }
 .kbd {
   display: inline-block;
@@ -817,6 +845,8 @@ onMounted(load)
 .about-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
 .about-desc p { margin: 4px 0; }
 .about-links { border-top: 1px solid var(--bg-elevated); padding-top: 12px; }
+.about-link { color: var(--accent); text-decoration: none; }
+.about-link:hover { text-decoration: underline; }
 .about-update {
   margin-top: 16px; padding-top: 12px;
   border-top: 1px solid var(--bg-elevated);

@@ -15,3 +15,12 @@ func OrderFront(title string) {}
 
 // ResignKey 在非 macOS 上是 no-op。
 func ResignKey(title string) {}
+
+// ActivateForDialog 在非 macOS 上是 no-op。
+func ActivateForDialog() {}
+
+// DeactivateAfterDialog 在非 macOS 上是 no-op。
+func DeactivateAfterDialog() {}
+
+// SaveFileDialog 在非 macOS 上返回空，由调用方 fallback 到 wailsruntime。
+func SaveFileDialog(title, defaultName string) string { return "" }

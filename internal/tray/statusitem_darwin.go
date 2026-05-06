@@ -12,10 +12,11 @@ extern void GoPasteStatusItemSetIcon(const unsigned char *icon_png, int icon_len
 import "C"
 import "unsafe"
 
-// statusItemCallbacks 由 installStatusItem 注册，被下面四个 export 函数调用。
+// statusItemCallbacks 由 installStatusItem 注册，被下面的 export 函数调用。
 var statusItemCallbacks struct {
 	onShow    func()
 	onAbout   func()
+	onWebsite func()
 	onRestart func()
 	onQuit    func()
 }
@@ -31,6 +32,13 @@ func goStatusItemOnShow() {
 func goStatusItemOnAbout() {
 	if statusItemCallbacks.onAbout != nil {
 		go statusItemCallbacks.onAbout()
+	}
+}
+
+//export goStatusItemOnWebsite
+func goStatusItemOnWebsite() {
+	if statusItemCallbacks.onWebsite != nil {
+		go statusItemCallbacks.onWebsite()
 	}
 }
 
@@ -53,6 +61,7 @@ func goStatusItemOnQuit() {
 func installStatusItem(cb Callbacks, iconPNG []byte) func() {
 	statusItemCallbacks.onShow = cb.OnShow
 	statusItemCallbacks.onAbout = cb.OnAbout
+	statusItemCallbacks.onWebsite = cb.OnWebsite
 	statusItemCallbacks.onRestart = cb.OnRestart
 	statusItemCallbacks.onQuit = cb.OnQuit
 

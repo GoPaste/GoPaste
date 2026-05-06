@@ -26,6 +26,17 @@ import (
 // 轮询间隔与 golang.design 原版保持一致（1s），既不增加 CPU 也不影响 UX
 // （file watcher 500ms 已经足够覆盖大部分用户感知）。本通道只发"变化后的内容"，
 // 不做去重——上层 watcher.handle 已基于 hash 去重，这里保持简单。
+//
+// 【baseline 策略】
+// lastCC 初始化为 -1，保证首次 tick 一定派发当前剪贴板内容。
+// "启动前剪贴板里的历史残留"由 Watcher.bootstrapFromClipboard 预先把
+// 内容 hash 塞进 lastSig —— 首次派发的内容若与之相同会被 hash 去重不入库；
+// 反之若用户在 App 启动过程中刚好复制了新内容，hash 不同会正常入库。
+//
+// 不在这里用 pasteboardChangeCountGo() 作为 baseline：那样会与"App 启动
+// 耗时期间用户已经按 Cmd+C 复制"形成窗口期 race —— baseline 已经包含
+// 用户这次复制的 changeCount，之后永远检测不到这次变化，表现为"偶现
+// 首次复制丢失"。
 func startTextWatch(ctx context.Context) <-chan []byte {
 	out := make(chan []byte, 1)
 	var lastCC int64 = -1

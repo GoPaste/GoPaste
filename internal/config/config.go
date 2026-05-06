@@ -9,6 +9,9 @@ import (
 // AppName 数据目录名。
 const AppName = "GoPaste"
 
+// Website 官网地址（程序内所有引用官网链接的地方都从这里读取）。
+const Website = "https://gopaste.wetools.cc/"
+
 // Paths 运行期路径集合。
 type Paths struct {
 	Root     string // ~/.GoPaste

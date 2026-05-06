@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)](https://github.com/GoPaste/GoPaste/releases)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 
-[简体中文](#) · [English](README.en.md)
+[简体中文](#) · [English](README.en.md) · [官网](https://gopaste.wetools.cc/)
 
 </div>
 
@@ -151,4 +151,4 @@ GoPaste 通过模拟 `Cmd+V` 将内容粘贴到目标应用，需要「辅助功
 
 ## 📄 License
 
-[MIT](LICENSE) © 2026 larkwins
+[Apache-2.0](LICENSE) © 2026 larkwins

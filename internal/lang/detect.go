@@ -7,7 +7,8 @@
 //   - 第二道防线：CJK 字符占比高 → 直接判 markdown（弱规则）/ 空，规避典型
 //     误判（比如"中文说明 + 嵌入 git/mkdir 命令"被误识别为 Bash）。
 //   - 第三道防线：手写正则启发式覆盖主流 10+ 语言。规则按特异性排序，先匹配的赢。
-//   - 第四道防线：chroma.Analyse 内置 lexer 自评分兜底（小众语言比如 Lua/PHP/Erlang）。
+//   - 第四道防线：chroma.Analyse 内置 lexer 自评分兜底，但只放行主流语言白名单，
+//     避免 Gdscript3 / Modula-2 等冷门 lexer 对日志/普通代码过度自信抢匹配。
 //
 // 选择不在前端跑 hljs.highlightAuto 是为了：
 //  1. 避免列表渲染时每个 code 项 5-30ms 的卡顿（hljs 是同步阻塞）。
@@ -39,6 +40,20 @@ func Detect(src string) string {
 		sample = sample[:detectSampleLimit]
 	}
 
+	// 第零道：强代码特征前置。
+	// markdown 强检测里的 ![](), [](), <http://...>, **bold** 等语法，
+	// 可以合法地出现在源码的字符串/反引号字面量里（典型场景：lang 自己的
+	// detect_test.go、README 生成脚本、爬虫里拼 markdown 的 Python 代码）。
+	// 这类文件同时具备"代码三件套"和"markdown 强信号"，若让 markdown
+	// 一票通过会把源码误判成笔记。所以先看是否有几乎不可能出现在 markdown
+	// 笔记里的代码组合（如 Go 的 package+import+func 同时出现），命中就跳过
+	// markdown 强检测，直接进入启发式代码识别。
+	if looksLikeCodeStrong(sample) {
+		if name := heuristicDetect(sample); name != "" {
+			return name
+		}
+	}
+
 	// 第一道：强 markdown 检测。中英混合的 markdown 笔记走不进 CJK 分支，
 	// 过去会落到代码识别链路被错判通用 Code，这里用强特征前置兜住。
 	if looksLikeMarkdownStrong(sample) {
@@ -62,8 +77,14 @@ func Detect(src string) string {
 	}
 
 	// 第四道：chroma 内置 lexer 自评分兜底（小众语言比如 Lua/PHP/Erlang）。
+	// 只保留白名单内的常见语言——chroma 收录了 200+ lexer，很多冷门 lexer
+	// （GDScript3 / Modula-2 / Genshi 等）会对普通代码/日志过度自信抢匹配，
+	// 对用户而言这些标签基本无意义，不如退回通用 "Code"。
 	if l := lexers.Analyse(sample); l != nil {
-		return normalizeChromaName(l.Config().Name)
+		name := normalizeChromaName(l.Config().Name)
+		if isAllowedChromaLang(name) {
+			return name
+		}
 	}
 
 	return ""
@@ -72,6 +93,60 @@ func Detect(src string) string {
 // normalizeChromaName 把 chroma 的展示名（"Go" "C++" "JavaScript"）转成小写标准名。
 func normalizeChromaName(name string) string {
 	return strings.ToLower(name)
+}
+
+// chromaAllowlist 第四道防线放行的主流语言集合。
+// 判据：语言流行度高、日常剪贴场景常见，或在启发式规则里未覆盖但识别价值明确。
+// 不在表内的一律回落到通用 "Code" 标签，避免 Gdscript3 / Modula-2 之类无意义结果。
+var chromaAllowlist = map[string]struct{}{
+	"go":         {},
+	"python":     {},
+	"python 2":   {},
+	"javascript": {},
+	"typescript": {},
+	"java":       {},
+	"kotlin":     {},
+	"scala":      {},
+	"groovy":     {},
+	"c":          {},
+	"c++":        {},
+	"c#":         {},
+	"objective-c": {},
+	"swift":      {},
+	"rust":       {},
+	"ruby":       {},
+	"php":        {},
+	"perl":       {},
+	"lua":        {},
+	"r":          {},
+	"dart":       {},
+	"elixir":     {},
+	"erlang":     {},
+	"haskell":    {},
+	"ocaml":      {},
+	"clojure":    {},
+	"bash":       {},
+	"shell":      {},
+	"powershell": {},
+	"sql":        {},
+	"html":       {},
+	"css":        {},
+	"scss":       {},
+	"less":       {},
+	"xml":        {},
+	"yaml":       {},
+	"toml":       {},
+	"json":       {},
+	"ini":        {},
+	"markdown":   {},
+	"dockerfile": {},
+	"makefile":   {},
+	"nginx configuration file": {},
+}
+
+func isAllowedChromaLang(name string) bool {
+	_, ok := chromaAllowlist[name]
+	return ok
 }
 
 // ---- 启发式规则 ------------------------------------------------------------
@@ -146,9 +221,15 @@ var (
 			regexp.MustCompile(`\$\{[^}]+\}`),
 			regexp.MustCompile(`(?m)^\s*(?:echo|grep|awk|sed|cat|cd|ls|mkdir|rm)\s+`),
 		}},
-		// JSON：花括号包围的 "key": value 结构。
+		// JSON：必须含完整的 "key": value 结构。
+		// 历史上这里还有一条 `^\s*[{\[]`（仅要求以 { 或 [ 开头）的规则，
+		// 但这个规则过于宽松——任何以方括号开头的文本（如 `[DIAG] ...`
+		// 日志、`[INFO] ...` 命令行输出、中文笔记里的 `[备注]` 标签等）
+		// 都会被误判成 JSON。删除后只保留带引号键的结构性规则：
+		//   - 正面：{"name":"x"} / 格式化 JSON / 含对象元素的 JSON 数组 全部正常命中
+		//   - 代价：纯字面量数组 [1,2,3] 不再被识别为 JSON，但这类内容在剪贴板
+		//     里极少出现且会兜底到通用 Code 标签，权衡可接受
 		{"json", []*regexp.Regexp{
-			regexp.MustCompile(`^\s*[{\[]`),
 			regexp.MustCompile(`"[\w.-]+"\s*:\s*(?:"[^"]*"|\d+|true|false|null|[\[{])`),
 		}},
 		// YAML：缩进 + key: value，且不含 JSON 的双引号包键。
@@ -183,6 +264,67 @@ func heuristicDetect(src string) string {
 		}
 	}
 	return ""
+}
+
+// ---- 强代码特征（用于抢在 markdown 强检测之前放行）-----------------------
+
+// codeStrongRule 一条强代码特征规则：只有 all 里的全部正则都命中才算。
+// 与 heuristicRules 的"任一命中"不同，这里要求**同时**命中多条，
+// 用来识别"几乎不可能是 markdown 笔记"的源码组合。
+// 设计权衡：
+//   - 命中阈值高 → 漏判率高（部分源码走不进来），但这没关系 —— 漏掉的
+//     会继续走第一道 markdown / 第三道启发式，不会变差。
+//   - 命中阈值高 → 误判率极低 → 可以安全地抢在 markdown 强检测之前。
+type codeStrongRule struct {
+	name string
+	all  []*regexp.Regexp
+}
+
+var codeStrongRules = []codeStrongRule{
+	// Go：package 声明 + import + func 同时出现。markdown 笔记里凑齐这三件
+	// 极不现实（即便摘抄代码也通常只贴函数体片段）。
+	{"go", []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^package\s+\w+\s*$`),
+		regexp.MustCompile(`(?m)^import\s+["(]`),
+		regexp.MustCompile(`\bfunc\s+(?:\(\w+\s+\*?\w+\)\s+)?\w+\s*\(`),
+	}},
+	// Rust：fn + let + impl/trait/use 同时出现。
+	{"rust", []*regexp.Regexp{
+		regexp.MustCompile(`\bfn\s+\w+\s*(?:<[^>]+>)?\s*\(`),
+		regexp.MustCompile(`\blet\s+(?:mut\s+)?\w+\s*[:=]`),
+		regexp.MustCompile(`\b(?:impl|trait|pub\s+fn|use\s+\w+::)`),
+	}},
+	// Java：package 语句 + public class + main 方法。
+	{"java", []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^package\s+[\w.]+\s*;`),
+		regexp.MustCompile(`\bpublic\s+(?:static\s+)?(?:final\s+)?class\s+\w+`),
+		regexp.MustCompile(`\bpublic\s+static\s+void\s+main\s*\(`),
+	}},
+	// Python：def 函数定义 + 顶格 import/from 语句。两条都要命中，避免笔记里
+	// 偶尔贴个 `def foo():` 就误判。
+	{"python", []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*def\s+\w+\s*\(.*\)\s*:`),
+		regexp.MustCompile(`(?m)^\s*(?:from\s+[\w.]+\s+import\s+|import\s+\w+\s*$)`),
+	}},
+}
+
+// looksLikeCodeStrong 命中任一语言的强代码组合则返回 true。
+// 存在目的：抢在 markdown 强检测之前判明"显然是源码"的样本，
+// 避免源码里合法出现的 markdown 语法字面量把识别带偏。
+func looksLikeCodeStrong(src string) bool {
+	for _, r := range codeStrongRules {
+		matched := true
+		for _, re := range r.all {
+			if !re.MatchString(src) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- 自然语言判别 ----------------------------------------------------------

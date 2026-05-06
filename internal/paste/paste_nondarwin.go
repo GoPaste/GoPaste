@@ -16,3 +16,6 @@ func HasAccessibility() bool { return true }
 
 // PromptAccessibility 在非 darwin 是 no-op，直接返回 true。
 func PromptAccessibility() bool { return true }
+
+// WarmupOsascript 在非 darwin 是 no-op。
+func WarmupOsascript() {}

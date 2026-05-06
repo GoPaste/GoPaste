@@ -1,7 +1,9 @@
 <script lang="ts" setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import hljs from 'highlight.js/lib/common'
-import 'highlight.js/styles/github.css'
+// 默认使用 github-dark（与深色背景匹配）；浅色模式下在 CSS 里作用域覆盖为 GitHub 浅色调色板。
+// 原先用的 github.css 是浅色主题，在深色背景上字符串等 token 几乎不可见。
+import 'highlight.js/styles/github-dark.css'
 import { t, lang } from './i18n'
 import type { Lang } from './i18n'
 import {
@@ -61,6 +63,9 @@ const selectedIdx = ref(0)
 const detailContent = ref<string>('')
 const detailVisible = ref(false)
 const detailType = ref<string>('')
+// 当前详情条目的原始引用：标题栏渲染 metaParts() 时复用，与列表卡片下方那行元信息保持一致。
+// 用 ref<Item> 而不是再加一堆 size/charCount/time 散 ref，避免重复维护。
+const detailItem = ref<Item | null>(null)
 const loading = ref(false)
 
 // 分页
@@ -282,6 +287,7 @@ const detailLanguage = ref<string>('')
 async function showDetail(it: Item) {
   detailType.value = it.type
   detailLanguage.value = it.language || ''
+  detailItem.value = it
   try {
     // 图片类型：应用内预览
     if (it.type === 'image') {
@@ -331,6 +337,11 @@ const tabHotkeysEnabled = ref(true)
 // 单击模式下的延时触发器：区分单击/双击（双击时取消单击的 doPaste）
 let singleClickTimer: number | null = null
 const DBLCLICK_THRESHOLD_MS = 250
+// 空格键的"延迟单击"定时器：第一次空格延迟打开预览；阈值内又一次 → 升级为双击专属操作。
+// 与 singleClickTimer 同范式，但通道独立（鼠标点条目 / 键盘按空格 互不影响）。
+// 阈值取 200ms（< 鼠标 250ms）：键盘连按比鼠标快，留出舒适的双击窗口同时控制单击预览的延迟感。
+let spacePreviewTimer: number | null = null
+const SPACE_DBLCLICK_THRESHOLD_MS = 200
 
 function onItemClick(idx: number, it: Item) {
   selectedIdx.value = idx
@@ -397,6 +408,26 @@ async function doSaveImage(it: Item) {
   try { await SaveImageToFile(it.id) }
   catch (e) { console.error(e) }
   finally { suppressBlurHide.value-- }
+}
+
+// 按内容类型分发"专属操作"：双击空格的目标动作。
+//   image → 保存（弹系统对话框）
+//   file  → 在资源管理器/Finder 中显示
+//   link  → 浏览器打开
+//   其它  → 无事发生（不报错、不弹提示，与设计预期一致）
+function runPrimaryAction(it: Item) {
+  switch (it.type) {
+    case 'image': doSaveImage(it); break
+    case 'file':  doRevealFile(it); break
+    case 'link':  doOpenUrl(it); break
+    // text / code 等：无专属动作，按需求"无事发生"
+  }
+}
+
+// 是否存在双击专属动作。无则空格走"零延迟 toggle"快路径，
+// 避免给 text/code 这些没有目的地的类型平白塞 150ms 卡顿。
+function hasPrimaryAction(it: Item): boolean {
+  return it.type === 'image' || it.type === 'file' || it.type === 'link'
 }
 
 // 备注弹窗
@@ -572,6 +603,24 @@ function switchFilterByIndex(idx: number) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  // 确认弹窗显示期间：仅响应 Enter（确认）/ Esc（取消），其它键一律拦截，
+  // 避免：按 Enter 既弹框又触发 doPaste；按 Backspace 在弹框开启时再次触发 doDelete
+  // 造成弹框叠压；按空格触发预览/专属操作等。
+  // 放在函数最顶部、早于任何分支——包括 view !== 'main' 的设置界面返回逻辑。
+  if (confirmVisible.value) {
+    if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation()
+      onConfirmOk()
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation()
+      onConfirmCancel()
+    } else {
+      // 吞掉其它所有键，防止冒到默认处理（如 Backspace 再次弹一个新确认框）
+      e.preventDefault(); e.stopPropagation()
+    }
+    return
+  }
+
   // 设置界面：Esc 退出设置回到主列表
   if (view.value !== 'main') {
     if (e.key === 'Escape') {
@@ -581,12 +630,15 @@ function onKeyDown(e: KeyboardEvent) {
     return
   }
 
-  // Alt+1..6：快速切换到对应的分类 tab
-  // 优先级最高，避免被搜索框输入吞掉
-  // - Alt+1..6 → 收藏/文本/图片/文件/链接/代码 (idx=1..6)
-  // 注：Alt+0/"全部" 不再绑定 —— 由主热键唤起即可
+  // 数字键切换分类 tab（应用内）
+  // macOS：Cmd+1..6；Windows/Linux：Alt+1..6
+  // 与后端 app.go registerHotkey() 的平台判断保持一致。
   // 受 tabHotkeysEnabled 开关控制：关掉后应用内也不再拦截，与全局热键行为一致。
-  if (tabHotkeysEnabled.value && e.altKey && !e.ctrlKey && !e.metaKey) {
+  const isMacPlatform = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
+  const tabKeyPressed = isMacPlatform
+    ? (e.metaKey && !e.ctrlKey && !e.altKey)
+    : (e.altKey && !e.ctrlKey && !e.metaKey)
+  if (tabHotkeysEnabled.value && tabKeyPressed) {
     if (/^[1-6]$/.test(e.key)) {
       const n = parseInt(e.key, 10)
       if (n < typeOptions.value.length) {
@@ -641,20 +693,58 @@ function onKeyDown(e: KeyboardEvent) {
     e.preventDefault()
     scrollSelectedIntoView()
   } else if (e.key === ' ' && !searchHasValue && selected.value) {
-    // 空格键：预览/关闭详情面板（夹在"选择"与"粘贴"之间的轻量查看动作）。
-    // - 搜索框"有内容"时放行，让空格作为搜索词的一部分输入
-    // - 搜索框为空或焦点不在搜索框 → 拦截为预览快捷键
-    // - 详情已打开则再次按空格关闭，形成 toggle 体验
-    // - preventDefault 避免触发页面滚动
+    // 空格键：单击预览 / 双击执行类型专属操作。
+    //   - 单击：toggle 详情面板（夹在"选择"与"粘贴"之间的轻量查看动作）
+    //   - 双击（200ms 内连按两次）：按 selected.type 分发到专属操作
+    //       image → 保存图片 / file → 资源管理器中显示 / link → 浏览器打开
+    //       其它类型无事发生
+    //   - 焦点在搜索框时整段 if 不命中（让空格作为搜索词输入）
+    //   - preventDefault 避免触发页面滚动
+    //
+    // 实现策略：延迟单击 + 双击抢占（与鼠标 onItemClick 同范式）。
+    // 第一次空格不立刻打开预览，先 setTimeout 200ms；若期间又来一次空格，
+    // 取消 pending 的预览、改执行专属动作。
+    //
+    // e.repeat 过滤：长按空格时 OS 自动重复的 keydown 间隔通常 30~50ms，
+    // 小于 200ms 阈值，会被误判为"双击"。直接丢掉自动重复事件即可。
     e.preventDefault()
-    if (detailVisible.value) detailVisible.value = false
-    else showDetail(selected.value)
+    if (e.repeat) return
+    const it = selected.value
+    if (!hasPrimaryAction(it)) {
+      // 无专属动作的类型（text/code 等）：不进双击窗口，立即 toggle 预览，零延迟。
+      detailVisible.value ? (detailVisible.value = false) : showDetail(it)
+    } else if (spacePreviewTimer != null) {
+      // 第二次空格 → 双击命中
+      window.clearTimeout(spacePreviewTimer)
+      spacePreviewTimer = null
+      runPrimaryAction(it)
+    } else if (detailVisible.value) {
+      // 详情已开 → 任意单击空格直接关闭（不进双击窗口，避免"关了又被双击重开"歧义）
+      detailVisible.value = false
+    } else {
+      // 第一次空格 → 延迟开预览，等待可能的第二次
+      spacePreviewTimer = window.setTimeout(() => {
+        spacePreviewTimer = null
+        showDetail(it)
+      }, SPACE_DBLCLICK_THRESHOLD_MS)
+    }
   } else if (e.key === 'Enter' && selected.value) {
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
     if (detailVisible.value) detailVisible.value = false
     else HideWindow()
-  } else if (e.key === 'Delete' && selected.value) {
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && !searchHasValue && selected.value) {
+    // 删除选中项：
+    //   - Delete：Win/Linux 键盘 + Mac 外接键盘
+    //   - Backspace：Mac 笔记本主键盘区的 ⌫（Mac 上没有独立 Delete 键）
+    // gate 条件用 !searchHasValue（而非 !inSearch）：
+    //   - 搜索框有内容时：让 Delete/Backspace 作为原生文本编辑键，避免每按一次
+    //     退格就删一条历史记录
+    //   - 搜索框为空时（含默认焦点在搜索框但用户还没输入）：空框里按这两个键
+    //     本来就是 no-op，此时重定向到"删除历史项"更符合预期
+    //   - 焦点不在搜索框（inSearch=false → searchHasValue 必然也为 false）：照常触发
+    // preventDefault 避免 WebView2/Chromium 把空框里的 Backspace 当"导航后退"吞掉。
+    e.preventDefault()
     doDelete(selected.value)
   }
 }
@@ -704,6 +794,7 @@ onUnmounted(() => {
   window.removeEventListener('blur', onWindowBlur)
   window.removeEventListener('resize', syncWebViewBg)
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (spacePreviewTimer != null) { window.clearTimeout(spacePreviewTimer); spacePreviewTimer = null }
   if (unsubscribe) unsubscribe()
 })
 
@@ -800,6 +891,7 @@ function onWindowBlur() {
             ref="searchRef"
             v-model="keyword"
             :placeholder="t('search')"
+            @keydown="(e) => { if (e.key === ' ' && !keyword.trim()) e.preventDefault() }"
             @input="onSearchInput"
             @compositionstart="onSearchCompositionStart"
             @compositionend="onSearchCompositionEnd"
@@ -941,11 +1033,19 @@ function onWindowBlur() {
       <div v-else-if="detailVisible" class="detail-mask" @click.self="detailVisible = false">
         <div class="detail">
           <div class="detail-head">
-            <span>{{ t('detail') }}</span>
+            <!-- 标题栏直接复用列表卡片下方的元信息（metaParts），保持视觉一致：
+                 类型/语言 · 大小 · 字符数/文件数 · 时间。无 detailItem 时回退到 t('detail')。
+                 用 · 分隔与 .meta 列表渲染保持同款。 -->
+            <span class="detail-meta">{{ detailItem ? metaParts(detailItem).join(' · ') : t('detail') }}</span>
             <button @click="detailVisible = false"><Trash2 :size="0" /><span style="font-size:16px;color:#a8adbd;cursor:pointer">✕</span></button>
           </div>
           <div class="detail-body">
             <pre v-if="detailType === 'code'" class="code-hl hljs" v-html="highlightCode(detailContent, detailLanguage)"></pre>
+            <!-- 链接：渲染为可点击 anchor，点击交给系统浏览器打开。
+                 必须 prevent，否则 Wails webview 会试图把 href 当成当前页导航 → 白屏。
+                 href 仍写真实 url，便于用户右键复制 / 看 hover 时浏览器状态栏式提示。 -->
+            <a v-else-if="detailType === 'link'" class="detail-link" :href="detailContent"
+               @click.prevent="OpenURL(detailContent)">{{ detailContent }}</a>
             <pre v-else>{{ detailContent }}</pre>
           </div>
         </div>
@@ -1020,7 +1120,7 @@ function onWindowBlur() {
 <style>
 * { box-sizing: border-box; }
 :root, [data-theme="dark"] {
-  --bg: #14161c; --bg-elevated: #1c2029; --bg-hover: #1a1e27; --bg-active: #21283a;
+  --bg: #14161c; --bg-elevated: #242833; --bg-hover: #1e222c; --bg-active: #2b3140;
   --bg-sidebar: #0f1117; --bg-statusbar: #171a22;
   --border: #2a2f3a; --border-light: #1c2029;
   --text: #e6e8ef; --text-secondary: #a8adbd; --text-muted: #6b7280;
@@ -1185,14 +1285,45 @@ html, body, #app {
 .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-.detail-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.detail-mask { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .detail { background: var(--bg-elevated); border-radius: 10px; width: calc(100% - 16px); max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,.3); margin: 0 8px; }
 .detail-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .detail-head button { background: transparent; border: none; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; }
 .detail-head button:hover { color: #fff; }
+/* 详情标题：复用 metaParts，颜色用次级文本色弱化、字号略小，避免与正文抢视觉权重。
+   超长 URL/文件名截断防止把 ✕ 按钮挤出去（加 min-width:0 让 flex 子项可收缩）。 */
+.detail-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: .2px;
+  flex: 1; min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 12px;
+  /* 显式靠左：父级（.detail / 模态外层）继承了 text-align:center，
+     不指定的话 12px 短文本在 flex:1 容器里会视觉居中。 */
+  text-align: left;
+}
 .detail-body { padding: 14px; overflow: auto; text-align: left; }
 .detail-body pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 13px; color: var(--text); text-align: left; }
 .detail-body img { max-width: 100%; border-radius: 6px; }
+/* 链接详情：经典浏览器链接观感（蓝/紫 + 下划线 + 手形光标），
+   保留与 pre 一致的等宽字体和长串换行，避免超长 url 撑破面板。 */
+.detail-link {
+  display: block;
+  font-family: 'SF Mono', 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+.detail-link:hover { color: #1d4ed8; }
+.detail-link:active { color: #1e40af; }
 
 /* 代码高亮：仅 code 类型条目使用，token 颜色由 highlight.js 的 GitHub 主题提供。
    这里只覆写字体/行距，并把主题默认的灰底改为透明，融入 .detail 面板背景。 */
@@ -1203,6 +1334,49 @@ html, body, #app {
   background: transparent;
   padding: 0;
 }
+
+/* 浅色主题下反向覆盖为 GitHub 官方浅色调色板（默认 import 的是 github-dark）。 */
+[data-theme="light"] .hljs { color: #24292e; background: transparent; }
+[data-theme="light"] .hljs-doctag,
+[data-theme="light"] .hljs-keyword,
+[data-theme="light"] .hljs-meta .hljs-keyword,
+[data-theme="light"] .hljs-template-tag,
+[data-theme="light"] .hljs-template-variable,
+[data-theme="light"] .hljs-type,
+[data-theme="light"] .hljs-variable.language_ { color: #d73a49; }
+[data-theme="light"] .hljs-title,
+[data-theme="light"] .hljs-title.class_,
+[data-theme="light"] .hljs-title.class_.inherited__,
+[data-theme="light"] .hljs-title.function_ { color: #6f42c1; }
+[data-theme="light"] .hljs-attr,
+[data-theme="light"] .hljs-attribute,
+[data-theme="light"] .hljs-literal,
+[data-theme="light"] .hljs-meta,
+[data-theme="light"] .hljs-number,
+[data-theme="light"] .hljs-operator,
+[data-theme="light"] .hljs-variable,
+[data-theme="light"] .hljs-selector-attr,
+[data-theme="light"] .hljs-selector-class,
+[data-theme="light"] .hljs-selector-id { color: #005cc5; }
+[data-theme="light"] .hljs-regexp,
+[data-theme="light"] .hljs-string,
+[data-theme="light"] .hljs-meta .hljs-string { color: #032f62; }
+[data-theme="light"] .hljs-built_in,
+[data-theme="light"] .hljs-symbol { color: #e36209; }
+[data-theme="light"] .hljs-comment,
+[data-theme="light"] .hljs-code,
+[data-theme="light"] .hljs-formula { color: #6a737d; }
+[data-theme="light"] .hljs-name,
+[data-theme="light"] .hljs-quote,
+[data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-selector-pseudo { color: #22863a; }
+[data-theme="light"] .hljs-subst { color: #24292e; }
+[data-theme="light"] .hljs-section { color: #005cc5; font-weight: bold; }
+[data-theme="light"] .hljs-bullet { color: #735c0f; }
+[data-theme="light"] .hljs-emphasis { color: #24292e; font-style: italic; }
+[data-theme="light"] .hljs-strong { color: #24292e; font-weight: bold; }
+[data-theme="light"] .hljs-addition { color: #22863a; background-color: #f0fff4; }
+[data-theme="light"] .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
 
 /* 图片纯预览（无边框） */
 .detail-img-only {

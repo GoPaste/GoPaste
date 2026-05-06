@@ -4,7 +4,7 @@ package window
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework Cocoa
+#cgo LDFLAGS: -framework Cocoa -framework UniformTypeIdentifiers
 
 #include <stdlib.h>   // for free()
 
@@ -12,6 +12,9 @@ extern void GoPasteConvertToNonactivatingPanel(const char *title);
 extern void GoPasteOrderOut(const char *title);
 extern void GoPasteOrderFront(const char *title);
 extern void GoPasteResignKey(const char *title);
+extern void GoPasteActivateForDialog(void);
+extern void GoPasteDeactivateAfterDialog(void);
+extern char *GoPasteSaveFileDialog(const char *title, const char *defaultName);
 */
 import "C"
 
@@ -51,4 +54,31 @@ func ResignKey(title string) {
 	ct := C.CString(title)
 	defer C.free(unsafe.Pointer(ct))
 	C.GoPasteResignKey(ct)
+}
+
+// ActivateForDialog 在弹出系统对话框（SaveFileDialog 等）前调用。
+// NonactivatingPanel 不是 active app，系统对话框需要 active app 才能正常显示。
+// 临时调用 activateIgnoringOtherApps: 让 GoPaste 成为前台应用。
+func ActivateForDialog() {
+	C.GoPasteActivateForDialog()
+}
+
+// DeactivateAfterDialog 对话框关闭后调用，恢复 NonactivatingPanel 的非激活状态。
+func DeactivateAfterDialog() {
+	C.GoPasteDeactivateAfterDialog()
+}
+
+// SaveFileDialog 在主线程原子执行"激活 → NSSavePanel → 恢复"。
+// 返回用户选择的路径，取消返回空字符串。
+func SaveFileDialog(title, defaultName string) string {
+	ct := C.CString(title)
+	cn := C.CString(defaultName)
+	defer C.free(unsafe.Pointer(ct))
+	defer C.free(unsafe.Pointer(cn))
+	result := C.GoPasteSaveFileDialog(ct, cn)
+	if result == nil {
+		return ""
+	}
+	defer C.free(unsafe.Pointer(result))
+	return C.GoString(result)
 }

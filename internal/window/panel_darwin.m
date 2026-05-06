@@ -22,6 +22,8 @@
 
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#include <string.h>  // for strdup
 
 // ------------------------------------------------------------------
 // GoPasteNSPanel —— 空壳子类，仅重写 canBecomeKeyWindow / CanBecomeMain
@@ -188,4 +190,61 @@ void GoPasteResignKey(const char *ctitle) {
             [win resignKeyWindow];
         }
     });
+}
+
+// 弹出系统对话框前临时激活 GoPaste。
+// NonactivatingPanel 不是 active app，SaveFileDialog / OpenFileDialog 等
+// NSSavePanel 需要 active app 才能正常显示并接收输入。
+// 使用同步调用确保激活完成后再返回，调用方才能弹出对话框。
+void GoPasteActivateForDialog(void) {
+    run_on_main_sync(^{
+        [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+    });
+}
+
+// 对话框关闭后将激活状态交还给上一个前台应用。
+void GoPasteDeactivateAfterDialog(void) {
+    run_on_main_async(^{
+        [[NSApplication sharedApplication] deactivate];
+    });
+}
+
+// GoPasteSaveFileDialog 在主线程内原子执行：激活 → NSSavePanel → 恢复。
+// 避免 Wails SaveFileDialog 跨线程 dispatch 导致激活状态在弹框前丢失。
+// 返回用户选择的路径（C 字符串，调用方需 free），取消返回 NULL。
+char *GoPasteSaveFileDialog(const char *title, const char *defaultName) {
+    __block char *result = NULL;
+    run_on_main_sync(^{
+        // 激活应用，让 NSSavePanel 能正常显示
+        [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        if (title) {
+            panel.title = [NSString stringWithUTF8String:title];
+        }
+        if (defaultName) {
+            panel.nameFieldStringValue = [NSString stringWithUTF8String:defaultName];
+        }
+        // 限制文件类型
+        if (@available(macOS 11.0, *)) {
+            panel.allowedContentTypes = @[UTTypeJSON];
+        } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            panel.allowedFileTypes = @[@"json"];
+#pragma clang diagnostic pop
+        }
+        panel.canCreateDirectories = YES;
+
+        NSModalResponse resp = [panel runModal];
+
+        // 恢复非激活状态
+        [[NSApplication sharedApplication] deactivate];
+
+        if (resp == NSModalResponseOK && panel.URL) {
+            const char *path = [[panel.URL path] UTF8String];
+            result = strdup(path);
+        }
+    });
+    return result;
 }

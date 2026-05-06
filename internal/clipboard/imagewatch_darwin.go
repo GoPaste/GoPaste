@@ -28,6 +28,11 @@ import (
 // watch 行为完全一致）。
 func startImageWatch(ctx context.Context) <-chan []byte {
 	out := make(chan []byte, 1)
+	// lastCC 初始化为 -1，保证首次 tick 一定派发当前剪贴板图片。
+	// "启动前的历史图片残留"由 Watcher.bootstrapFromClipboard 预先把
+	// 内容 hash 塞进 lastSig，首次派发的内容若相同会被 hash 去重不入库。
+	// 不在这里用 pasteboardChangeCountGo() 作为 baseline，理由见
+	// textwatch_darwin.go 同名处注释（race 窗口会导致首次复制偶现丢失）。
 	var lastCC int64 = -1
 	go func() {
 		defer close(out)

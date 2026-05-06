@@ -32,7 +32,6 @@ import (
 	"os/exec"
 	"sync"
 )
-
 // -----------------------------------------------------------------------------
 // 为什么现在用 osascript 而不是 CGEventPost
 // -----------------------------------------------------------------------------
@@ -99,6 +98,17 @@ func PromptAccessibility() (trusted bool) {
 		C.paste_check_accessibility(1) // 忽略返回值：主要目的是触发系统弹框
 	})
 	return HasAccessibility()
+}
+
+// WarmupOsascript 在应用启动后异步预热 osascript 进程。
+// osascript 首次 fork+exec 需要 50~100ms（dyld 链接 System Events 框架）；
+// 预热后系统会缓存相关库，后续调用降到 10~30ms。
+// 调用一次即可，幂等，失败静默忽略。
+func WarmupOsascript() {
+	go func() {
+		// 执行一个无副作用的空脚本，仅触发 osascript + System Events 的 dyld 缓存加载
+		_ = exec.Command("osascript", "-e", `return`).Run()
+	}()
 }
 
 // sendPasteImpl 在 macOS 上通过 `osascript` 让 System Events 投递 Cmd+V。

@@ -175,6 +175,9 @@ func (a *App) startup(ctx context.Context) {
 	a.registerHotkey()
 	bootProbeApp("startup: hotkey registered")
 
+	// macOS：预热 osascript，消除首次粘贴时的 fork+dyld 冷启动延迟（约 50~100ms）
+	paste.WarmupOsascript()
+
 	bootProbeApp("startup: entering tray block")
 	if tray.CanToggle() {
 		// Windows / macOS：支持平滑切换图标显隐，无需重启进程。
@@ -255,25 +258,36 @@ func (a *App) domReady(ctx context.Context) {
 	// 修法：domReady 时若窗口已显示，主动调 ShowMain 抢前台 + emit
 	// window:show 让前端跑 onWindowShow（聚焦搜索框、回到顶部等）。
 	//
-	// 仅 Windows 需要：macOS 由 AppKit 处理首窗口激活；Linux 上 wm 通常
-	// 也会把焦点给新窗口。windowVisible 在 setVisible 里维护，初始 false，
-	// 所以这里用 wails runtime 的真实状态判断。
-	if runtime.GOOS == "windows" && a.ctx != nil {
-		if !wailsruntime.WindowIsMinimised(a.ctx) {
-			// 仅当 StartHidden=false 时窗口才是可见的；StartHidden=true 时
-			// wails 不会显示窗口，此处也不该强行显示（违背用户设置）。
-			// 用 settings 判断比直接调 wails API 更可靠（wails v2 没暴露
-			// IsVisible 给业务层）。
-			silentStart := false
-			if a.settings != nil {
-				silentStart = a.settings.Get().SilentStart
-			}
-			if !silentStart {
-				window.ShowMain(a.ctx)
-				a.setVisible(true)
+	// macOS：NonactivatingPanel 不会被 AppKit 自动激活，同样需要处理。
+	// 用 ActivateForDialog 临时激活让窗口能接收键盘，然后立刻 Deactivate
+	// 恢复非激活状态（不抢前台应用）。
+	// Windows：同理，ShowMain 抢前台。
+	silentStart := false
+	if a.settings != nil {
+		silentStart = a.settings.Get().SilentStart
+	}
+	if !silentStart && a.ctx != nil && !wailsruntime.WindowIsMinimised(a.ctx) {
+		if runtime.GOOS == "darwin" {
+			go func() {
+				// 稍等 NSPanel 完全显示后再激活，避免时序问题
+				time.Sleep(200 * time.Millisecond)
+				window.ActivateForDialog()
+				// 冷启动首次点击无效问题：
+				// 之前这里会立刻调 DeactivateAfterDialog() 让 app 回到非激活
+				// 状态（保持"不抢前台"的 NonactivatingPanel 语义）。但副作用是
+				// AppKit 把"非激活 app 上的第一次点击"当成激活事件吞掉——用户
+				// 看到的现象就是"冷启动后首次点击任何按钮都无效、鼠标不显示手型"。
+				// 现在不再立即 deactivate：让 app 保持 active 直到用户自己操作
+				// 或窗口下次 orderOut 时由 AppKit 自动让出前台。热启动走的是
+				// OrderFront/makeKey 路径，不经过这里，"不抢前台"语义不受影响。
 				wailsruntime.EventsEmit(a.ctx, "window:show")
-				bootProbeApp("domReady: cold-start ShowMain done")
-			}
+				bootProbeApp("domReady: cold-start mac focus done")
+			}()
+		} else if runtime.GOOS == "windows" {
+			window.ShowMain(a.ctx)
+			a.setVisible(true)
+			wailsruntime.EventsEmit(a.ctx, "window:show")
+			bootProbeApp("domReady: cold-start windows ShowMain done")
 		}
 	}
 }
@@ -294,21 +308,28 @@ func (a *App) registerHotkey() {
 	}
 	a.hotkey = hk
 
-	// 附加：Alt+1..6 全局快捷键（受 TabHotkeysEnabled 开关控制）。
+	// 附加：数字键切 tab 全局快捷键（受 TabHotkeysEnabled 开关控制）。
 	// 即使主面板未显示也会被系统级捕获 → 唤起面板并切到对应 tab。
 	// 索引含义与前端 typeOptions 一致：1=收藏, 2=文本, 3=图片, 4=文件, 5=链接, 6=代码。
 	// "全部"(idx=0) 不再绑定快捷键 → 由主热键唤起即可（resetFilterOnShow 默认会回到全部）。
-	// 关闭原因：Alt+1..6 容易与其它软件（IDE、浏览器等）的快捷键冲突，用户可在设置里关掉。
+	//
+	// macOS 上 Option(Alt)+数字 会被系统拦截转为特殊 Unicode 字符（Option+1=¡ 等），
+	// 全局热键永远收不到 Keydown 事件，改用 Cmd+数字。
+	// Windows/Linux 仍使用 Alt+数字（Cmd 在这两个平台映射到 Win/Super，影响范围更大）。
 	if s.TabHotkeysEnabled {
+		tabMod := "alt"
+		if runtime.GOOS == "darwin" {
+			tabMod = "cmd"
+		}
 		tabKeys := []string{"1", "2", "3", "4", "5", "6"}
 		for i, k := range tabKeys {
 			idx := i + 1 // 跳过 0=全部，从 1 开始
 			key := k     // 闭包捕获，避免共享 loop var
-			if err := a.hotkey.Add(a.ctx, []string{"alt"}, key, func() {
+			if err := a.hotkey.Add(a.ctx, []string{tabMod}, key, func() {
 				a.showPanelAndSwitchTab(idx)
 			}); err != nil {
-				// 单个失败不影响其它（例如系统已被别的程序占用 Alt+N）
-				a.log.Warn("hotkey alt+tab-key register failed", "err", err, "key", key)
+				// 单个失败不影响其它（例如系统已被别的程序占用）
+				a.log.Warn("hotkey tab-key register failed", "err", err, "mod", tabMod, "key", key)
 			}
 		}
 	}
@@ -737,6 +758,7 @@ func (a *App) startTray() {
 	a.trayEnd = tray.Start(tray.Callbacks{
 		OnShow:    a.togglePanel,
 		OnAbout:   a.showAbout,
+		OnWebsite: a.openWebsite,
 		OnRestart: a.restartApp,
 		OnQuit:    a.quitApp,
 	})
@@ -895,11 +917,11 @@ func (a *App) PasteItem(id int64) error {
 		} else {
 			bootProbeApp("PasteItem: skip HideMain (already hidden)")
 		}
-		// 120ms：给 AppKit 的 orderOut 走完 + WindowServer 更新 frontmost
+		// 80ms：给 AppKit 的 orderOut 走完 + WindowServer 更新 frontmost
 		// 进程排序 + 目标 app 的 windowDidBecomeKey 回调链。
 		// 经验值：40ms 时 osascript 偶尔仍把键发到 Dock/背景；80ms 稳定；
-		// 120ms 留余量（对用户不可感知）。
-		time.Sleep(120 * time.Millisecond)
+		// 原来 120ms 是留余量，实测 80ms 已足够。
+		time.Sleep(80 * time.Millisecond)
 	} else {
 		// Windows / Linux：WindowHide 后焦点不会自动回到上一个窗口，
 		// 必须显式 SetForegroundWindow / xdotool activate，否则
@@ -1087,6 +1109,47 @@ func (a *App) ExportData() (string, error) {
 	return string(b), nil
 }
 
+// ExportDataToFile 弹出系统保存对话框，将历史导出为 JSON 文件。
+// macOS：用原生 NSSavePanel（原子执行激活+弹框+恢复，避免 NonactivatingPanel 问题）。
+// 其他平台：用 Wails SaveFileDialog。
+func (a *App) ExportDataToFile() (string, error) {
+	if a.repo == nil || a.ctx == nil {
+		return "", fmt.Errorf("not ready")
+	}
+	data, err := a.ExportData()
+	if err != nil {
+		return "", err
+	}
+
+	defaultName := fmt.Sprintf("GoPaste-export-%d.json", time.Now().UnixMilli())
+	var savePath string
+
+	if runtime.GOOS == "darwin" {
+		// macOS：原生 NSSavePanel，在主线程原子执行激活→弹框→恢复
+		savePath = window.SaveFileDialog("导出剪切板记录", defaultName)
+	} else {
+		savePath, err = wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+			Title:           "导出剪切板记录",
+			DefaultFilename: defaultName,
+			Filters: []wailsruntime.FileFilter{
+				{DisplayName: "JSON 文件", Pattern: "*.json"},
+				{DisplayName: "所有文件", Pattern: "*.*"},
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if savePath == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(savePath, []byte(data), 0o644); err != nil {
+		return "", err
+	}
+	return savePath, nil
+}
+
 // DataDir 返回用户数据目录（前端设置页展示）。
 func (a *App) DataDir() string {
 	if a.paths == nil {
@@ -1152,8 +1215,7 @@ func (a *App) showAbout() {
 	_, _ = wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
 		Type:    wailsruntime.InfoDialog,
 		Title:   "关于 GoPaste",
-		Message: "GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。",
-		Buttons: []string{"确定"},
+		Message: "GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。\n\n官网：" + config.Website,
 	})
 }
 
@@ -1292,9 +1354,22 @@ func (a *App) OpenURL(url string) error {
 	return nil
 }
 
+// openWebsite 托盘菜单"打开官网"回调。
+func (a *App) openWebsite() {
+	if a.ctx == nil {
+		return
+	}
+	wailsruntime.BrowserOpenURL(a.ctx, config.Website)
+}
+
 // GetAppVersion 返回当前应用版本（semver 字符串，形如 "0.1.0"）。
 func (a *App) GetAppVersion() string {
 	return updater.Version
+}
+
+// GetWebsite 返回官网地址，前端通过此方法获取而非硬编码。
+func (a *App) GetWebsite() string {
+	return config.Website
 }
 
 // CheckForUpdate 检查 GitHub Releases 是否有更新。

@@ -38,6 +38,17 @@ func (fw *FileWatcher) Events() <-chan types.Item { return fw.out }
 
 // Start 启动轮询监听（500ms 间隔）。
 func (fw *FileWatcher) Start(ctx context.Context) {
+	// 先同步读一次当前剪贴板文件列表，把签名作为 lastSig 初值。
+	// 目的：若启动时剪贴板里已有文件复制（用户上次复制但未粘贴，或
+	// 其它程序占用 CF_HDROP），首次 tick 轮询到同样列表会被 lastSig
+	// 去重，不会把这份"启动前残留"当作新事件入库。
+	// 用户启动后复制的新文件一定产生不同 sig，会正常入库。
+	//
+	// 早期实现曾用 `bootstrapped bool` 吞掉第一帧非空结果，但当"启动时
+	// 剪贴板为空、用户启动后第一次复制文件" race 到首帧时，这次复制
+	// 也会被错误吞掉（偶现现象）。用内容签名做 baseline 没有这个窗口。
+	fw.bootstrapFromClipboard()
+
 	go func() {
 		defer close(fw.out)
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -55,6 +66,20 @@ func (fw *FileWatcher) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// bootstrapFromClipboard 读一次当前剪贴板文件列表，把路径拼接后的 hash
+// 塞进 lastSig。若剪贴板当前没有文件则保持空。
+func (fw *FileWatcher) bootstrapFromClipboard() {
+	files := pollFiles()
+	if len(files) == 0 {
+		return
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	fw.lastSig = storage.HashBytes([]byte(strings.Join(paths, "\n")))
 }
 
 func (fw *FileWatcher) handleFiles(files []FileInfo) {

@@ -63,6 +63,55 @@ func TestDetect(t *testing.T) {
 			src:  "{\n  \"homepage\": \"https://example.com\",\n  \"name\": \"foo\"\n}\n",
 			wantOne: []string{"json"},
 		},
+		{
+			// 防回归：以 [ 开头的日志/命令行输出不应被识别为 JSON。
+			// 历史 bug：曾经的 JSON 规则里有 `^\s*[{\[]`，任何以方括号开头
+			// 的文本（浏览器 console 贴出来的 `[DIAG] ...` 日志、`[INFO] ...`
+			// 输出、中文笔记里的 `[备注]` 标签）都会被误判。
+			name: "bracket-prefixed-log-must-not-be-json",
+			src: `[DIAG] window blur: view= main hasFocus= false
+App.vue:876 [DIAG] blur timer: view= main hasFocus= true
+App.js:54 Uncaught TypeError: Cannot read properties of undefined (reading 'main')
+    at HideWindow (App.js:54:22)`,
+			wantOne: []string{"", "javascript", "typescript"},
+		},
+		{
+			// 防回归：浏览器 console 日志曾经被 chroma.Analyse 误判成 Gdscript3
+			// 之类的冷门语言。现在第四道防线加了主流语言白名单，应该落到通用 Code。
+			name: "browser-console-log-must-not-be-niche-language",
+			src: `[DIAG] window blur: view= main hasFocus= false
+App.vue:876 [DIAG] blur timer: view= main hasFocus= true
+2App.vue:872 [DIAG] window blur: view= main hasFocus= false
+App.vue:876 [DIAG] blur timer: view= main hasFocus= false
+App.js:54 Uncaught TypeError: Cannot read properties of undefined (reading 'main')
+    at HideWindow (App.js:54:22)
+    at App.vue:881:7`,
+			wantOne: []string{"", "javascript", "typescript"},
+		},
+		{
+			// 防回归：Go 源码里包含大量 markdown 语法字面量（典型：detect_test.go
+			// 自己、爬虫里拼 markdown 的代码），markdown 强信号（![](), [](),
+			// <http://...>, **bold**）会合法出现在反引号 raw string 里。
+			// 必须靠 Go 三件套（package + import + func）抢在 markdown 强检测前命中。
+			name: "go-source-with-markdown-literals-must-be-go",
+			src: "package lang\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n" +
+				"\tcases := []string{\n" +
+				"\t\t`**<https://github.com/GoPaste/GoPaste>**`,\n" +
+				"\t\t`![poster](https://example.com/poster.png)`,\n" +
+				"\t\t`[link](https://example.com)`,\n" +
+				"\t}\n" +
+				"\t_ = cases\n" +
+				"}\n",
+			wantOne: []string{"go"},
+		},
+		{
+			// 防回归：Python 爬虫代码里拼 markdown 字符串，不能被误判 markdown
+			name: "python-source-with-markdown-literals-must-be-python",
+			src: "import re\n\ndef render(title, url):\n" +
+				"    tpl = f'# {title}\\n\\n![img]({url})\\n\\n**bold**\\n'\n" +
+				"    return tpl\n",
+			wantOne: []string{"python", "python 2"},
+		},
 	}
 
 	for _, c := range cases {

@@ -56,6 +56,7 @@ func FlushPendingStart() {
 type Callbacks struct {
 	OnShow    func() // 左键单击托盘图标 / 菜单"显示主面板"
 	OnAbout   func() // 菜单"关于"
+	OnWebsite func() // 菜单"打开官网"
 	OnRestart func() // 菜单"重启"
 	OnQuit    func() // 菜单"退出"
 }
@@ -131,6 +132,7 @@ func Start(cb Callbacks) (cleanup func()) {
 		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
 		systray.AddSeparator()
 		mAbout := systray.AddMenuItem("关于", "版本与项目信息")
+		mWebsite := systray.AddMenuItem("打开官网", "在浏览器中打开 GoPaste 官网")
 		systray.AddSeparator()
 		mRestart := systray.AddMenuItem("重启", "重新启动应用")
 		mQuit := systray.AddMenuItem("退出", "完全关闭应用")
@@ -145,6 +147,10 @@ func Start(cb Callbacks) (cleanup func()) {
 				case <-mAbout.ClickedCh:
 					if cb.OnAbout != nil {
 						cb.OnAbout()
+					}
+				case <-mWebsite.ClickedCh:
+					if cb.OnWebsite != nil {
+						cb.OnWebsite()
 					}
 				case <-mRestart.ClickedCh:
 					systray.Quit()

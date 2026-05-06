@@ -4,8 +4,8 @@
 // 设计要点：
 //   - 所有 ObjC 对象（NSStatusItem、NSMenu、delegate）都由 ObjC ARC 持有，
 //     不经过 Go GC，彻底避免 fyne/systray 的"Go GC 回收 ObjC target → 野指针"问题。
-//   - 回调通过 goStatusItemOnShow / goStatusItemOnAbout / goStatusItemOnRestart /
-//     goStatusItemOnQuit 四个 Go export 函数转回 Go 层，这些函数本身不持有任何
+//   - 回调通过 goStatusItemOnShow / goStatusItemOnAbout / goStatusItemOnWebsite /
+//     goStatusItemOnRestart / goStatusItemOnQuit 五个 Go export 函数转回 Go 层，
 //     ObjC 对象，GC 安全。
 //   - 整个生命周期（install → click → menu select → uninstall）全部在主线程运行，
 //     dispatch_async 保证调用方无需关心线程。
@@ -16,6 +16,7 @@
 // Go 侧导出的回调，由 statusitem_darwin.go 实现
 extern void goStatusItemOnShow(void);
 extern void goStatusItemOnAbout(void);
+extern void goStatusItemOnWebsite(void);
 extern void goStatusItemOnRestart(void);
 extern void goStatusItemOnQuit(void);
 
@@ -37,6 +38,10 @@ extern void goStatusItemOnQuit(void);
 
 - (void)onMenuAbout:(id)sender {
     goStatusItemOnAbout();
+}
+
+- (void)onMenuWebsite:(id)sender {
+    goStatusItemOnWebsite();
 }
 
 - (void)onMenuRestart:(id)sender {
@@ -112,6 +117,13 @@ void GoPasteStatusItemInstall(const unsigned char *icon_png, int icon_len) {
             keyEquivalent:@""];
         mAbout.target = gDelegate;
         [menu addItem:mAbout];
+
+        NSMenuItem *mWebsite = [[NSMenuItem alloc]
+            initWithTitle:@"打开官网"
+                   action:@selector(onMenuWebsite:)
+            keyEquivalent:@""];
+        mWebsite.target = gDelegate;
+        [menu addItem:mWebsite];
 
         [menu addItem:[NSMenuItem separatorItem]];
 
