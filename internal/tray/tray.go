@@ -54,11 +54,12 @@ func FlushPendingStart() {
 
 // Callbacks 托盘菜单项 / 交互行为。
 type Callbacks struct {
-	OnShow    func() // 左键单击托盘图标 / 菜单"显示主面板"
-	OnAbout   func() // 菜单"关于"
-	OnWebsite func() // 菜单"打开官网"
-	OnRestart func() // 菜单"重启"
-	OnQuit    func() // 菜单"退出"
+	OnShow     func() // 左键单击托盘图标 / 菜单"显示主面板"
+	OnSettings func() // 菜单"打开设置"
+	OnAbout    func() // 菜单"关于"
+	OnWebsite  func() // 菜单"打开官网"
+	OnRestart  func() // 菜单"重启"
+	OnQuit     func() // 菜单"退出"
 }
 
 //go:embed icons/tray.ico
@@ -130,6 +131,7 @@ func Start(cb Callbacks) (cleanup func()) {
 		})
 
 		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
+		mSettings := systray.AddMenuItem("打开设置", "打开偏好设置")
 		systray.AddSeparator()
 		mAbout := systray.AddMenuItem("关于", "版本与项目信息")
 		mWebsite := systray.AddMenuItem("打开官网", "在浏览器中打开 GoPaste 官网")
@@ -143,6 +145,10 @@ func Start(cb Callbacks) (cleanup func()) {
 				case <-mShow.ClickedCh:
 					if cb.OnShow != nil {
 						cb.OnShow()
+					}
+				case <-mSettings.ClickedCh:
+					if cb.OnSettings != nil {
+						cb.OnSettings()
 					}
 				case <-mAbout.ClickedCh:
 					if cb.OnAbout != nil {

@@ -90,6 +90,60 @@ func Detect(src string) string {
 	return ""
 }
 
+// LooksLikeCode 判断一段文本是否"看起来像代码"，用于 typeOfText 粗分类阶段。
+// 依次检查：
+//  1. 结构化数据快速检测（JSON/XML）—— 即使单行也应归类为 code
+//  2. Chroma lexer 分析 —— 对有一定长度的文本尝试自动识别
+//
+// 返回 true 表示应归类为 code；false 表示无法判断，调用方继续走原有逻辑。
+func LooksLikeCode(s string) bool {
+	if s == "" {
+		return false
+	}
+	// 结构化数据快速检测：JSON
+	// 以 { 开头 + 以 } 结尾，或以 [ 开头 + 以 ] 结尾，且含 "key": 模式
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) > 2 {
+		first, last := trimmed[0], trimmed[len(trimmed)-1]
+		if (first == '{' && last == '}') || (first == '[' && last == ']') {
+			// 进一步确认含 JSON key-value 特征，避免 [备注] 这类误判
+			if reJSONKey.MatchString(trimmed) {
+				return true
+			}
+		}
+		// 结构化数据快速检测：XML/HTML
+		// 以 < 开头 + 以 > 结尾，且含标签结构
+		if first == '<' && last == '>' {
+			if reXMLTag.MatchString(trimmed) {
+				return true
+			}
+		}
+	}
+
+	// Chroma 兜底：对有一定长度的文本尝试自动识别
+	if len(trimmed) > 50 {
+		sample := trimmed
+		if len(sample) > detectSampleLimit {
+			sample = sample[:detectSampleLimit]
+		}
+		if l := lexers.Analyse(sample); l != nil {
+			name := normalizeChromaName(l.Config().Name)
+			if isAllowedChromaLang(name) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+var (
+	// JSON key 特征：匹配 "key": 或 "key" :
+	reJSONKey = regexp.MustCompile(`"[\w.$/-]+"\s*:`)
+	// XML 标签特征：匹配 <TagName 或 </TagName>
+	reXMLTag = regexp.MustCompile(`</?[a-zA-Z][\w.-]*[\s>]`)
+)
+
 // normalizeChromaName 把 chroma 的展示名（"Go" "C++" "JavaScript"）转成小写标准名。
 func normalizeChromaName(name string) string {
 	return strings.ToLower(name)
@@ -241,10 +295,17 @@ var (
 		{"sql", []*regexp.Regexp{
 			regexp.MustCompile(`(?i)\b(?:select\s+.+\s+from|insert\s+into|update\s+\w+\s+set|create\s+(?:table|index|view))\b`),
 		}},
-		// HTML：DOCTYPE 或常见标签对。
+		// HTML：DOCTYPE 或常见标签对。放在 XML 之前——HTML 是 XML 子集，
+		// 有明确 HTML 特征的应优先命中 HTML。
 		{"html", []*regexp.Regexp{
 			regexp.MustCompile(`(?i)<!doctype\s+html>`),
-			regexp.MustCompile(`(?i)<(?:html|head|body|div|span|p|a|h[1-6])\b`),
+			regexp.MustCompile(`(?i)<(?:html|head|body|div|span|p|a|h[1-6]|script|style|link|meta|form|input|button|table|ul|ol|li|nav|header|footer|section|article)\b`),
+		}},
+		// XML：XML 声明、或非 HTML 常见标签的闭合标签对（如 <Error>...</Error>）。
+		// 放在 HTML 之后——含 HTML 特征的先被 HTML 规则捕获，剩下的才是纯 XML。
+		{"xml", []*regexp.Regexp{
+			regexp.MustCompile(`<\?xml\s+version=`),
+			regexp.MustCompile(`(?i)</[A-Z][A-Za-z]+>\s*$`),
 		}},
 		// CSS：选择器 + 花括号 + property: value;
 		{"css", []*regexp.Regexp{

@@ -124,7 +124,7 @@ func main() {
 		Title:             "GoPaste",
 		Width:             680,
 		Height:            680,
-		MinWidth:          450,
+		MinWidth:          600,
 		MinHeight:         600,
 		DisableResize:     false,
 		StartHidden:       startHidden,

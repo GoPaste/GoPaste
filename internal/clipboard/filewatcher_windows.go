@@ -9,21 +9,6 @@ import (
 	"unsafe"
 )
 
-var (
-	user32              = syscall.NewLazyDLL("user32.dll")
-	kernel32            = syscall.NewLazyDLL("kernel32.dll")
-	shell32             = syscall.NewLazyDLL("shell32.dll")
-	openClipboard       = user32.NewProc("OpenClipboard")
-	closeClipboard      = user32.NewProc("CloseClipboard")
-	getClipboardData    = user32.NewProc("GetClipboardData")
-	isClipboardFmtAvail = user32.NewProc("IsClipboardFormatAvailable")
-	globalLock          = kernel32.NewProc("GlobalLock")
-	globalUnlock        = kernel32.NewProc("GlobalUnlock")
-	dragQueryFileW      = shell32.NewProc("DragQueryFileW")
-)
-
-const cfHDROP = 15
-
 // hasFilesOnClipboard 在 Windows 上仅检查剪切板是否含 CF_HDROP（文件列表），
 // 不需要 OpenClipboard，调用极其轻量。
 //

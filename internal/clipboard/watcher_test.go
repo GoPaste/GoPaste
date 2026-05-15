@@ -51,6 +51,24 @@ func TestTypeOfText(t *testing.T) {
 			in:   "just a single line of plain text",
 			want: types.TypeText,
 		},
+		{
+			// 单行 JSON 应该被识别为 code（不能因为没换行就判纯文本）
+			name: "single-line-json-must-be-code",
+			in:   `{"Policy":{"statement":[{"action":["name/cos:PutObject"],"effect":"allow","resource":["qcs::cos:ap-guangzhou:uid/123:bucket/*"]}]}}`,
+			want: types.TypeCode,
+		},
+		{
+			// 多行 XML 应该被识别为 code
+			name: "xml-must-be-code",
+			in:   "<Error>\n<Code>AccessDenied</Code>\n<Message>Access Denied.</Message>\n</Error>",
+			want: types.TypeCode,
+		},
+		{
+			// 带方括号的日志/笔记不应被误判为 JSON
+			name: "bracket-log-must-not-be-code",
+			in:   "[INFO] application started successfully",
+			want: types.TypeText,
+		},
 	}
 
 	for _, c := range cases {

@@ -231,6 +231,10 @@ func typeOfText(b []byte) types.ItemType {
 	if lang.IsMostlyCJK(s) {
 		return types.TypeText
 	}
+	// 结构化数据 + Chroma 识别：覆盖单行 JSON/XML 等场景
+	if lang.LooksLikeCode(s) {
+		return types.TypeCode
+	}
 	// 代码启发：包含常见符号 + 换行
 	if strings.Contains(s, "\n") && strings.ContainsAny(s, "{};=") {
 		return types.TypeCode

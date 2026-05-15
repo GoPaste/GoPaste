@@ -14,17 +14,25 @@ import "unsafe"
 
 // statusItemCallbacks 由 installStatusItem 注册，被下面的 export 函数调用。
 var statusItemCallbacks struct {
-	onShow    func()
-	onAbout   func()
-	onWebsite func()
-	onRestart func()
-	onQuit    func()
+	onShow     func()
+	onSettings func()
+	onAbout    func()
+	onWebsite  func()
+	onRestart  func()
+	onQuit     func()
 }
 
 //export goStatusItemOnShow
 func goStatusItemOnShow() {
 	if statusItemCallbacks.onShow != nil {
 		go statusItemCallbacks.onShow()
+	}
+}
+
+//export goStatusItemOnSettings
+func goStatusItemOnSettings() {
+	if statusItemCallbacks.onSettings != nil {
+		go statusItemCallbacks.onSettings()
 	}
 }
 
@@ -60,6 +68,7 @@ func goStatusItemOnQuit() {
 // iconPNG 为 PNG 字节数据；传 nil 则 ObjC 侧降级用文字 "P"。
 func installStatusItem(cb Callbacks, iconPNG []byte) func() {
 	statusItemCallbacks.onShow = cb.OnShow
+	statusItemCallbacks.onSettings = cb.OnSettings
 	statusItemCallbacks.onAbout = cb.OnAbout
 	statusItemCallbacks.onWebsite = cb.OnWebsite
 	statusItemCallbacks.onRestart = cb.OnRestart

@@ -756,11 +756,12 @@ func (a *App) startTray() {
 		return
 	}
 	a.trayEnd = tray.Start(tray.Callbacks{
-		OnShow:    a.togglePanel,
-		OnAbout:   a.showAbout,
-		OnWebsite: a.openWebsite,
-		OnRestart: a.restartApp,
-		OnQuit:    a.quitApp,
+		OnShow:     a.togglePanel,
+		OnSettings: a.openSettings,
+		OnAbout:    a.showAbout,
+		OnWebsite:  a.openWebsite,
+		OnRestart:  a.restartApp,
+		OnQuit:     a.quitApp,
 	})
 }
 
@@ -861,18 +862,79 @@ func (a *App) PasteItem(id int64) error {
 		a.log.Warn("paste: copy to clipboard failed", "id", id, "err", err)
 		return err
 	}
+	return a.pasteClipboardToFront(fmt.Sprintf("id=%d", id))
+}
+
+// PasteText 把任意字符串写入剪贴板并粘贴到前台窗口。
+//
+// 与 PasteItem 共用同一条粘贴流水线（权限预检、窗口 hide、焦点恢复、
+// SendPaste、pasteMu 串行化），区别只在剪贴板来源——PasteItem 从 repo 拉内容，
+// PasteText 直接用调用方传进来的字符串。
+//
+// 目的：让那些"非 history 内容"（emoji picker 的双击直粘、将来可能接入的
+// AI 回写 / OCR 结果回写 / 快捷短语等）可以复用经过反复踩坑固化的粘贴
+// 流水线，而不必为此临时入库拿 id 再删库。
+//
+// 入参空字符串视为成功 no-op（避免前端误调把剪贴板清空）。
+func (a *App) PasteText(text string) error {
+	if text == "" {
+		return nil
+	}
+	// 与 PasteItem 相同的重入保护：避免用户在 emoji grid 上疯狂双击时
+	// 两条流水线交错触发 macOS 硬崩。进入锁的位置必须比 WriteText 更早，
+	// 否则两次调用可能都写了剪贴板但只有一次 SendPaste 得逞，用户看到
+	// 的会是"贴出来的 emoji 不对"。
+	if !a.pasteMu.TryLock() {
+		a.log.Info("paste: skip reentrant PasteText")
+		return nil
+	}
+	defer a.pasteMu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			a.log.Error("paste: PasteText panic", "recover", r)
+		}
+	}()
+
+	// macOS 辅助功能权限预检：同 PasteItem 的处理，未授权时不改剪贴板、
+	// 不 hide、异步引导用户去授权。
+	if runtime.GOOS == "darwin" {
+		paste.PromptAccessibility()
+		if !paste.HasAccessibility() {
+			a.log.Warn("paste: PasteText blocked by accessibility permission")
+			go a.showAccessibilityGuide()
+			return paste.ErrNoAccessibility
+		}
+	}
+
+	if err := clipboard.WriteText([]byte(text)); err != nil {
+		a.log.Warn("paste: PasteText write clipboard failed", "err", err)
+		return err
+	}
+	return a.pasteClipboardToFront("text-len=" + fmt.Sprintf("%d", len(text)))
+}
+
+// pasteClipboardToFront 是 PasteItem / PasteText 共用的后半段流水线：
+// 假设剪贴板已经是目标内容，负责"隐藏窗口 → 恢复上一个前台窗口 → 发送
+// 系统 Paste 键"。
+//
+// 注意：**调用者必须已经持有 a.pasteMu**——这里不再 TryLock，因为
+// PasteItem / PasteText 各自在入口已经拿锁并做了 accessibility 预检
+// （语义上"读库/写剪贴板是否应该继续"也是锁内决策）。
+//
+// probeTag 仅用于 bootProbeApp 诊断，串到日志里方便区分来源。
+func (a *App) pasteClipboardToFront(probeTag string) error {
 	s := settings.Default()
 	if a.settings != nil {
 		s = a.settings.Get()
 	}
-	bootProbeApp(fmt.Sprintf("PasteItem: ready trigger=%s", s.PasteTrigger))
-	a.log.Info("paste: ready", "id", id, "pasteTrigger", s.PasteTrigger)
+	bootProbeApp(fmt.Sprintf("paste: ready %s trigger=%s", probeTag, s.PasteTrigger))
+	a.log.Info("paste: ready", "tag", probeTag, "pasteTrigger", s.PasteTrigger)
 
 	// 取出展示前抓到的"前一个窗口"（macOS 下永远是零值，captureFocusBeforeShow
 	// 在 mac 下短路）。
 	prev := a.takePrevFocus()
 	prevValid := prev.IsValid()
-	bootProbeApp(fmt.Sprintf("PasteItem: prevFocus valid=%v", prevValid))
+	bootProbeApp(fmt.Sprintf("paste: prevFocus valid=%v", prevValid))
 
 	// 隐藏面板 + 切回焦点，分平台走不同流程。
 	if runtime.GOOS == "darwin" {
@@ -953,14 +1015,14 @@ func (a *App) PasteItem(id int64) error {
 		}
 	}
 
-	bootProbeApp("PasteItem: before SendPaste")
+	bootProbeApp("paste: before SendPaste")
 	if err := paste.SendPaste(); err != nil {
-		bootProbeApp("PasteItem: SendPaste err=" + err.Error())
+		bootProbeApp("paste: SendPaste err=" + err.Error())
 		a.log.Warn("paste: send paste failed", "err", err)
 		return err
 	}
-	bootProbeApp(fmt.Sprintf("PasteItem: sent id=%d", id))
-	a.log.Info("paste: sent", "id", id)
+	bootProbeApp(fmt.Sprintf("paste: sent %s", probeTag))
+	a.log.Info("paste: sent", "tag", probeTag)
 	// mac 分支面板已在 SendPaste 之前 orderOut，这里无需再 hide。
 	// 非 mac 分支原本就是 WindowHide 先行。
 	return nil
@@ -1352,6 +1414,15 @@ func (a *App) OpenURL(url string) error {
 	}
 	wailsruntime.BrowserOpenURL(a.ctx, url)
 	return nil
+}
+
+// openSettings 托盘菜单"打开设置"回调：显示主窗口并切换到设置页。
+func (a *App) openSettings() {
+	if a.ctx == nil {
+		return
+	}
+	a.showPanel()
+	wailsruntime.EventsEmit(a.ctx, "view:settings")
 }
 
 // openWebsite 托盘菜单"打开官网"回调。

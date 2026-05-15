@@ -16,14 +16,14 @@ import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
   Download, Trash2, Info, Database, X, AlertTriangle,
   Star, FileText, Image as ImageIcon, File as FileIcon,
-  Link as LinkIcon, Code2,
+  Link as LinkIcon, Code2, Puzzle, Smile,
 } from 'lucide-vue-next'
 import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-type Tab = 'general' | 'clipboard' | 'shortcut' | 'backup' | 'about'
+type Tab = 'general' | 'clipboard' | 'shortcut' | 'backup' | 'extensions' | 'about'
 const activeTab = ref<Tab>('general')
 
 const navItems = computed(() => [
@@ -31,6 +31,7 @@ const navItems = computed(() => [
   { key: 'clipboard' as Tab, label: t('navClipboard'), icon: ClipboardList },
   { key: 'shortcut' as Tab, label: t('navShortcut'), icon: Keyboard },
   { key: 'backup' as Tab, label: t('navBackup'), icon: Database },
+  { key: 'extensions' as Tab, label: t('navExtensions'), icon: Puzzle },
   { key: 'about' as Tab, label: t('navAbout'), icon: Info },
 ])
 
@@ -45,12 +46,15 @@ const form = reactive({
   windowPosition: 'center',
   scrollTopOnShow: true,
   resetFilterOnShow: true,
+  clearSearchOnShow: true,
   silentStart: false,
   showTrayIcon: true,
   showTaskbarIcon: false,
   trayIconStyle: 'color' as 'color' | 'gray',
   autoStart: false,
   tabHotkeysEnabled: true,
+  emojiEnabled: true,
+  extendedEmoji: false,
 })
 
 const dataDir = ref('')
@@ -129,7 +133,7 @@ const appShortcuts = computed(() => [
   // text/code 等无专属动作的类型不进双击窗口（见 App.vue::hasPrimaryAction）。
   // 两个 Space 是"先后连按"语义，故用空串 sep（不走默认的"/"任一分隔符）。
   { label: t('appPrimaryAction'), keys: ['Space', 'Space'], sep: '' },
-  { label: t('appPaste'),      keys: ['Enter'] },
+  { label: t('appPaste'),      keys: [t('triggerDouble'), 'Enter'] },
   { label: t('appDelete'),     keys: ['Delete', 'Backspace'] },
   { label: t('appClose'),      keys: ['Esc'] },
 ])
@@ -157,12 +161,15 @@ async function load() {
   form.windowPosition = s.windowPosition || 'center'
   form.scrollTopOnShow = s.scrollTopOnShow !== false
   form.resetFilterOnShow = s.resetFilterOnShow !== false
+  form.clearSearchOnShow = s.clearSearchOnShow !== false
   form.silentStart = !!s.silentStart
   form.showTrayIcon = s.showTrayIcon !== false
   form.showTaskbarIcon = !!s.showTaskbarIcon
   form.trayIconStyle = (s.trayIconStyle === 'gray' ? 'gray' : 'color')
   form.autoStart = !!s.autoStart
   form.tabHotkeysEnabled = s.tabHotkeysEnabled !== false // 缺失/旧配置默认开启
+  form.emojiEnabled = s.emojiEnabled !== false // 缺失/旧配置默认开启
+  form.extendedEmoji = !!s.extendedEmoji
   dataDir.value = await DataDir()
   try { appVersion.value = await GetAppVersion() } catch {}
   try { websiteUrl.value = await GetWebsite() } catch {}
@@ -184,12 +191,15 @@ async function autoSave() {
       windowPosition: form.windowPosition,
       scrollTopOnShow: form.scrollTopOnShow,
       resetFilterOnShow: form.resetFilterOnShow,
+      clearSearchOnShow: form.clearSearchOnShow,
       silentStart: form.silentStart,
       showTrayIcon: form.showTrayIcon,
       showTaskbarIcon: form.showTaskbarIcon,
       trayIconStyle: form.trayIconStyle,
       autoStart: form.autoStart,
       tabHotkeysEnabled: form.tabHotkeysEnabled,
+      emojiEnabled: form.emojiEnabled,
+      extendedEmoji: form.extendedEmoji,
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => { saveMsg.value = '' }, 1500)
@@ -220,12 +230,15 @@ watchImmediate(() => form.pasteTrigger)
 watchImmediate(() => form.windowPosition)
 watchImmediate(() => form.scrollTopOnShow)
 watchImmediate(() => form.resetFilterOnShow)
+watchImmediate(() => form.clearSearchOnShow)
 watchImmediate(() => form.silentStart)
 watchImmediate(() => form.showTrayIcon)
 watchImmediate(() => form.showTaskbarIcon)
 watchImmediate(() => form.trayIconStyle)
 watchImmediate(() => form.autoStart)
 watchImmediate(() => form.tabHotkeysEnabled)
+watchImmediate(() => form.emojiEnabled)
+watchImmediate(() => form.extendedEmoji)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
 // 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
@@ -451,6 +464,10 @@ onMounted(load)
             <span>{{ t('resetFilterOnShow') }}</span>
             <label class="toggle"><input type="checkbox" v-model="form.resetFilterOnShow" /><span class="slider"></span></label>
           </div>
+          <div class="card-row">
+            <span>{{ t('clearSearchOnShow') }}</span>
+            <label class="toggle"><input type="checkbox" v-model="form.clearSearchOnShow" /><span class="slider"></span></label>
+          </div>
         </div>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
@@ -583,6 +600,31 @@ onMounted(load)
             <Trash2 :size="14" />
             {{ t('clearUnfav') }}
           </button>
+        </div>
+
+        <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
+      </div>
+
+      <!-- 扩展功能 -->
+      <div v-if="activeTab === 'extensions'" class="panel">
+        <div class="section-title">
+          <span>{{ t('extEmojiTitle') }}</span>
+        </div>
+        <div class="section-card">
+          <div class="card-row">
+            <div>
+              <span>{{ t('extEmojiEnabled') }}</span>
+              <p class="desc-inline">{{ t('extEmojiEnabledDesc') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.emojiEnabled" /><span class="slider"></span></label>
+          </div>
+          <div class="card-row" :class="{ disabled: !form.emojiEnabled }">
+            <div>
+              <span>{{ t('extEmojiFull') }}</span>
+              <p class="desc-inline">{{ t('extEmojiFullDesc') }}</p>
+            </div>
+            <label class="toggle"><input type="checkbox" v-model="form.extendedEmoji" /><span class="slider"></span></label>
+          </div>
         </div>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
@@ -886,7 +928,9 @@ onMounted(load)
 .section-title {
   font-size: 13px; font-weight: 600; color: var(--accent);
   margin: 16px 0 8px; padding: 0;
+  display: flex; align-items: center; gap: 6px;
 }
+.section-title-icon { flex-shrink: 0; }
 .section-title:first-child { margin-top: 0; }
 
 /* 卡片容器 */

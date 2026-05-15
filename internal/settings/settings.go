@@ -22,13 +22,25 @@ type Settings struct {
 	PasteTrigger      string   `json:"pasteTrigger"` // "single" | "double"，决定列表项何种点击动作触发粘贴
 	WindowPosition    string   `json:"windowPosition"`
 	ScrollTopOnShow   bool     `json:"scrollTopOnShow"`
-	ResetFilterOnShow bool     `json:"resetFilterOnShow"`
+	ResetFilterOnShow  bool     `json:"resetFilterOnShow"`
+	ClearSearchOnShow bool     `json:"clearSearchOnShow"` // 激活时清空搜索栏
 	SilentStart       bool     `json:"silentStart"`       // 静默启动（启动时隐藏窗口）
 	ShowTrayIcon      bool     `json:"showTrayIcon"`      // 显示菜单栏/托盘图标
 	ShowTaskbarIcon   bool     `json:"showTaskbarIcon"`   // 显示任务栏图标
 	TrayIconStyle     string   `json:"trayIconStyle"`     // 菜单栏图标风格："color"（彩色）| "gray"（灰色）
 	AutoStart         bool     `json:"autoStart"`         // 开机自启动
 	TabHotkeysEnabled bool     `json:"tabHotkeysEnabled"` // 是否启用 Alt+1..6 全局切分类热键（关掉避免与其它软件冲突）
+	// EmojiEnabled Emoji 功能总开关（默认开启）。
+	// 关闭：前端不挂载 EmojiPicker、不显示 emoji tab，组件 onBeforeUnmount 会释放
+	//      已构建的 sprite blob URL 等资源；同时不会触发任何 prewarm。
+	// 开启：恢复 emoji tab 与面板，按需触发 tone 0 prewarm（tones 1..5 仍受
+	//      ExtendedEmoji 开关 + 用户首次进入 emoji 视图的双重门控）。
+	EmojiEnabled bool `json:"emojiEnabled"`
+	// ExtendedEmoji 显示完整 Emoji 库。
+	// 关闭（默认）：在表情面板隐藏 "物品 / 旗帜" 两个分类，并隐藏右上角肤色切换按钮，
+	//             同时跳过 tone 1..5 sprite 的预热，可省下约 50MB GPU 内存。
+	// 开启：显示全部分类与肤色按钮，组件会防抖触发一次 tones 1..5 prewarm。
+	ExtendedEmoji bool `json:"extendedEmoji"`
 }
 
 // Default 返回默认设置。
@@ -45,13 +57,16 @@ func Default() Settings {
 		PasteTrigger:      "double",
 		WindowPosition:    "center",
 		ScrollTopOnShow:   true,
-		ResetFilterOnShow: true,
+		ResetFilterOnShow:  true,
+		ClearSearchOnShow: true,
 		SilentStart:       false,
 		ShowTrayIcon:      true,
 		ShowTaskbarIcon:   false,
 		TrayIconStyle:     "color",
 		AutoStart:         false,
 		TabHotkeysEnabled: true,
+		EmojiEnabled:      true,
+		ExtendedEmoji:     false,
 	}
 }
 

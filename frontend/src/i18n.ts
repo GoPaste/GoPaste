@@ -4,7 +4,7 @@ export type Lang = 'zh' | 'zh-TW' | 'en'
 export const lang = ref<Lang>('zh')
 
 const zh: Record<string, string> = {
-  'search': '搜索...', 'all': '全部', 'text': '文本', 'image': '图片',
+  'search': '搜索...', 'searchEmoji': '搜索表情符号...', 'all': '全部', 'text': '文本', 'image': '图片',
   'file': '文件', 'link': '链接', 'code': '代码', 'favorite': '收藏',
   'loading': '加载中...', 'empty': '暂无历史记录', 'emptyHint': '复制一些内容试试吧',
   'records': '条记录', 'statusHint': 'Tab/←→ 切换 · ↑↓ 选择 · 空格 预览 · ↵ 粘贴 · Esc 关闭',
@@ -12,7 +12,7 @@ const zh: Record<string, string> = {
   'viewDetail': '查看详情', 'unfavorite': '取消收藏', 'unpin': '取消置顶', 'pin': '置顶',
   'note': '备注', 'noteHint': '请输入备注', 'clearNote': '清除备注',
   'saveImage': '保存图片', 'revealInExplorer': '在资源管理器中显示', 'openInBrowser': '用浏览器打开',
-  'confirmOp': '确认操作', 'confirmDelete': '确定删除这条记录？',
+  'confirmOp': '确认操作', 'confirmDelete': '确定删除这条记录？', 'tip': '提示', 'deleteFavoriteTip': '已收藏，不能删除。',
   'cancel': '取消', 'ok': '确定',
   'moreFiles': '还有 {n} 个文件', 'nFiles': '{n} 个文件',
   'chars': '个字符', 'backTop': '回到顶部', 'empty2': '(空)',
@@ -64,6 +64,7 @@ const zh: Record<string, string> = {
   'windowPosition': '窗口位置', 'wpFollow': '跟随鼠标', 'wpRemember': '记住位置', 'wpCenter': '居中显示',
   'scrollTopOnShow': '激活时回到顶部', 'scrollTopOnShowDesc': '激活窗口时，滚动至顶部并选中首条',
   'resetFilterOnShow': '激活时切换至全部分组',
+  'clearSearchOnShow': '激活时清空搜索栏',
   'appSettings': '应用设置', 'appearSettings': '外观设置', 'updateSettings': '更新设置',
   'contentSettings': '内容设置', 'windowSettings': '窗口设置',
   'launchOnLogin': '登录时启动', 'silentStart': '静默启动', 'silentStartDesc': '手动启动应用时隐藏窗口',
@@ -72,10 +73,18 @@ const zh: Record<string, string> = {
   'checkUpdate': '检查更新', 'checking': '检查中…', 'upToDate': '已是最新版本', 'newVersionAvailable': '发现新版本 {v}', 'download': '前往下载',
   'restartRequired': '重启后生效',
   'clearSearch': '清除搜索',
+  'emoji': 'Emoji', 'emojiHint': '单击 复制 · 双击 粘贴', 'emojiCopied': '已复制', 'emojiPasted': '已粘贴',
+  // 扩展功能
+  'navExtensions': '扩展功能',
+  'extEmojiTitle': 'Emoji',
+  'extEmojiEnabled': '启用 Emoji 功能',
+  'extEmojiEnabledDesc': '关闭后将隐藏 Emoji 入口并释放相关内存占用，再次开启会重新加载。',
+  'extEmojiFull': '显示完整表情库',
+  'extEmojiFullDesc': '默认关闭「物品 / 旗帜」分类与肤色切换，开启后显示全部并允许切换肤色。',
 }
 
 const zhTW: Record<string, string> = {
-  'search': '搜尋...', 'all': '全部', 'text': '文字', 'image': '圖片',
+  'search': '搜尋...', 'searchEmoji': '搜尋表情符號...', 'all': '全部', 'text': '文字', 'image': '圖片',
   'file': '檔案', 'link': '連結', 'code': '程式碼', 'favorite': '收藏',
   'loading': '載入中...', 'empty': '暫無歷史紀錄', 'emptyHint': '複製一些內容試試吧',
   'records': '筆記錄', 'statusHint': 'Tab/←→ 切換 · ↑↓ 選擇 · 空格 預覽 · ↵ 貼上 · Esc 關閉',
@@ -83,7 +92,7 @@ const zhTW: Record<string, string> = {
   'viewDetail': '查看詳情', 'unfavorite': '取消收藏', 'unpin': '取消置頂', 'pin': '置頂',
   'note': '備註', 'noteHint': '請輸入備註', 'clearNote': '清除備註',
   'saveImage': '儲存圖片', 'revealInExplorer': '在檔案總管中顯示', 'openInBrowser': '用瀏覽器開啟',
-  'confirmOp': '確認操作', 'confirmDelete': '確定刪除這筆記錄？',
+  'confirmOp': '確認操作', 'confirmDelete': '確定刪除這筆記錄？', 'tip': '提示', 'deleteFavoriteTip': '已收藏，不能刪除。',
   'cancel': '取消', 'ok': '確定',
   'moreFiles': '還有 {n} 個檔案', 'nFiles': '{n} 個檔案',
   'chars': '個字元', 'backTop': '回到頂部', 'empty2': '(空)',
@@ -135,6 +144,7 @@ const zhTW: Record<string, string> = {
   'windowPosition': '視窗位置', 'wpFollow': '跟隨滑鼠', 'wpRemember': '記住位置', 'wpCenter': '置中顯示',
   'scrollTopOnShow': '啟動時回到頂部', 'scrollTopOnShowDesc': '啟動視窗時，捲動至頂部並選中首筆',
   'resetFilterOnShow': '啟動時切換至全部分組',
+  'clearSearchOnShow': '啟動時清空搜尋欄',
   'appSettings': '應用設定', 'appearSettings': '外觀設定', 'updateSettings': '更新設定',
   'contentSettings': '內容設定', 'windowSettings': '視窗設定',
   'launchOnLogin': '登入時啟動', 'silentStart': '靜默啟動', 'silentStartDesc': '手動啟動應用時隱藏視窗',
@@ -143,10 +153,18 @@ const zhTW: Record<string, string> = {
   'checkUpdate': '檢查更新', 'checking': '檢查中…', 'upToDate': '已是最新版本', 'newVersionAvailable': '發現新版本 {v}', 'download': '前往下載',
   'restartRequired': '重啟後生效',
   'clearSearch': '清除搜尋',
+  'emoji': 'Emoji', 'emojiHint': '單擊 複製 · 雙擊 貼上', 'emojiCopied': '已複製',
+  // 擴充功能
+  'navExtensions': '擴充功能',
+  'extEmojiTitle': 'Emoji',
+  'extEmojiEnabled': '啟用 Emoji 功能',
+  'extEmojiEnabledDesc': '關閉後將隱藏 Emoji 入口並釋放相關記憶體佔用，再次開啟會重新載入。',
+  'extEmojiFull': '顯示完整表情庫',
+  'extEmojiFullDesc': '預設關閉「物品 / 旗幟」分類與膚色切換，開啟後顯示全部並允許切換膚色。',
 }
 
 const en: Record<string, string> = {
-  'search': 'Search...', 'all': 'All', 'text': 'Text', 'image': 'Image',
+  'search': 'Search...', 'searchEmoji': 'Search emoji...', 'all': 'All', 'text': 'Text', 'image': 'Image',
   'file': 'File', 'link': 'Link', 'code': 'Code', 'favorite': 'Favorites',
   'loading': 'Loading...', 'empty': 'No clipboard history', 'emptyHint': 'Try copying something',
   'records': 'records', 'statusHint': 'Tab/←→ switch · ↑↓ select · Space preview · ↵ paste · Esc close',
@@ -154,7 +172,7 @@ const en: Record<string, string> = {
   'viewDetail': 'View Detail', 'unfavorite': 'Unfavorite', 'unpin': 'Unpin', 'pin': 'Pin',
   'note': 'Note', 'noteHint': 'Enter a note', 'clearNote': 'Clear note',
   'saveImage': 'Save Image', 'revealInExplorer': 'Reveal in Explorer', 'openInBrowser': 'Open in Browser',
-  'confirmOp': 'Confirm', 'confirmDelete': 'Delete this record?',
+  'confirmOp': 'Confirm', 'confirmDelete': 'Delete this record?', 'tip': 'Tip', 'deleteFavoriteTip': 'Favorited items cannot be deleted.',
   'cancel': 'Cancel', 'ok': 'OK',
   'moreFiles': '...and {n} more files', 'nFiles': '{n} files',
   'chars': 'Chars', 'backTop': 'Back to top', 'empty2': '(empty)',
@@ -206,6 +224,7 @@ const en: Record<string, string> = {
   'windowPosition': 'Window Position', 'wpFollow': 'Follow cursor', 'wpRemember': 'Remember', 'wpCenter': 'Center',
   'scrollTopOnShow': 'Scroll to top on activate', 'scrollTopOnShowDesc': 'Scroll to top and select first item when activated',
   'resetFilterOnShow': 'Reset filter on activate',
+  'clearSearchOnShow': 'Clear search on activate',
   'appSettings': 'App Settings', 'appearSettings': 'Appearance', 'updateSettings': 'Updates',
   'contentSettings': 'Content', 'windowSettings': 'Window',
   'launchOnLogin': 'Launch on login', 'silentStart': 'Silent start', 'silentStartDesc': 'Hide window when manually launched',
@@ -214,6 +233,14 @@ const en: Record<string, string> = {
   'checkUpdate': 'Check for updates', 'checking': 'Checking…', 'upToDate': 'You are up to date', 'newVersionAvailable': 'New version {v} available', 'download': 'Download',
   'restartRequired': 'Restart to apply',
   'clearSearch': 'Clear search',
+  'emoji': 'Emoji', 'emojiHint': 'Click copy · Double-click paste', 'emojiCopied': 'Copied', 'emojiPasted': 'Pasted',
+  // Extensions
+  'navExtensions': 'Extensions',
+  'extEmojiTitle': 'Emoji',
+  'extEmojiEnabled': 'Enable emoji feature',
+  'extEmojiEnabledDesc': 'When off, the emoji entry is hidden and its resources are freed. Turning it back on reloads them.',
+  'extEmojiFull': 'Show full emoji set',
+  'extEmojiFullDesc': 'Objects / Flags categories and skin-tone switching are off by default. Turn on to show everything and enable skin-tone switching.',
 }
 
 const messages: Record<Lang, Record<string, string>> = { zh, 'zh-TW': zhTW, en }

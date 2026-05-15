@@ -15,6 +15,7 @@
 
 // Go 侧导出的回调，由 statusitem_darwin.go 实现
 extern void goStatusItemOnShow(void);
+extern void goStatusItemOnSettings(void);
 extern void goStatusItemOnAbout(void);
 extern void goStatusItemOnWebsite(void);
 extern void goStatusItemOnRestart(void);
@@ -34,6 +35,10 @@ extern void goStatusItemOnQuit(void);
 
 - (void)onMenuShow:(id)sender {
     goStatusItemOnShow();
+}
+
+- (void)onMenuSettings:(id)sender {
+    goStatusItemOnSettings();
 }
 
 - (void)onMenuAbout:(id)sender {
@@ -108,6 +113,13 @@ void GoPasteStatusItemInstall(const unsigned char *icon_png, int icon_len) {
             keyEquivalent:@""];
         mShow.target = gDelegate;
         [menu addItem:mShow];
+
+        NSMenuItem *mSettings = [[NSMenuItem alloc]
+            initWithTitle:@"打开设置"
+                   action:@selector(onMenuSettings:)
+            keyEquivalent:@""];
+        mSettings.target = gDelegate;
+        [menu addItem:mSettings];
 
         [menu addItem:[NSMenuItem separatorItem]];
 
