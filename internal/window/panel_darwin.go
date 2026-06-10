@@ -12,6 +12,7 @@ extern void GoPasteConvertToNonactivatingPanel(const char *title);
 extern void GoPasteOrderOut(const char *title);
 extern void GoPasteOrderFront(const char *title);
 extern void GoPasteResignKey(const char *title);
+extern int GoPasteIsWindowKey(const char *title);
 extern void GoPasteActivateForDialog(void);
 extern void GoPasteDeactivateAfterDialog(void);
 extern char *GoPasteSaveFileDialog(const char *title, const char *defaultName);
@@ -54,6 +55,15 @@ func ResignKey(title string) {
 	ct := C.CString(title)
 	defer C.free(unsafe.Pointer(ct))
 	C.GoPasteResignKey(ct)
+}
+
+// IsWindowKey 检查指定 title 的窗口当前是否是 keyWindow。
+// 若返回 true，说明用户正在与 GoPaste 面板交互，
+// 此时全局热键不应再触发（避免与前端输入法组合冲突）。
+func IsWindowKey(title string) bool {
+	ct := C.CString(title)
+	defer C.free(unsafe.Pointer(ct))
+	return C.GoPasteIsWindowKey(ct) != 0
 }
 
 // ActivateForDialog 在弹出系统对话框（SaveFileDialog 等）前调用。

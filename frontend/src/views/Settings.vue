@@ -26,6 +26,11 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 type Tab = 'general' | 'clipboard' | 'shortcut' | 'backup' | 'extensions' | 'about'
 const activeTab = ref<Tab>('general')
 
+// 扩展功能里有跨平台项（Emoji 总开关 / 显示完整表情库）和仅 macOS 项
+// （Cmd+Q 行为）。扩展入口本身在所有平台都显示；仅平台相关的子区块在
+// 模板中按 isMacPlatform 行级隐藏，与 tabModKey 的平台检测方式保持一致。
+const isMacPlatform = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
+
 const navItems = computed(() => [
   { key: 'general' as Tab, label: t('navGeneral'), icon: SettingsIcon },
   { key: 'clipboard' as Tab, label: t('navClipboard'), icon: ClipboardList },
@@ -53,8 +58,12 @@ const form = reactive({
   trayIconStyle: 'color' as 'color' | 'gray',
   autoStart: false,
   tabHotkeysEnabled: true,
+  // 扩展功能 —— Emoji
   emojiEnabled: true,
   extendedEmoji: false,
+  // 扩展功能 —— macOS Cmd+Q 防误触
+  cmdQBehavior: 'default' as 'default' | 'confirm' | 'disable',
+  cmdQConfirmWindow: 1500,
 })
 
 const dataDir = ref('')
@@ -108,8 +117,8 @@ const hotkeyDisplay = computed(() => {
 // 与 App.vue 的 typeOptions 顺序保持一致（1..6=收藏/文本/图片/文件/链接/代码）。
 // 注：0="全部" 不在此列表 —— 由主热键直接唤起，无需独立分类热键。
 // macOS 上 Option(Alt)+数字 被系统拦截，改用 Cmd+数字。
-const isMac = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
-const tabModKey = isMac ? 'Cmd' : 'Alt'
+// 复用顶部定义的 isMacPlatform，避免重复检测平台。
+const tabModKey = isMacPlatform ? 'Cmd' : 'Alt'
 const tabShortcuts = computed(() => [
   { keys: [`${tabModKey} + 1`], label: t('favorite'), icon: Star },
   { keys: [`${tabModKey} + 2`], label: t('text'), icon: FileText },
@@ -168,8 +177,12 @@ async function load() {
   form.trayIconStyle = (s.trayIconStyle === 'gray' ? 'gray' : 'color')
   form.autoStart = !!s.autoStart
   form.tabHotkeysEnabled = s.tabHotkeysEnabled !== false // 缺失/旧配置默认开启
+  // 扩展功能 —— Emoji
   form.emojiEnabled = s.emojiEnabled !== false // 缺失/旧配置默认开启
   form.extendedEmoji = !!s.extendedEmoji
+  // 扩展功能 —— Cmd+Q 策略。旧配置缺失时默认 "default"。
+  form.cmdQBehavior = (['confirm', 'disable'].includes(s.cmdQBehavior) ? s.cmdQBehavior : 'default') as typeof form.cmdQBehavior
+  form.cmdQConfirmWindow = (typeof s.cmdQConfirmWindow === 'number' && s.cmdQConfirmWindow > 0) ? s.cmdQConfirmWindow : 1500
   dataDir.value = await DataDir()
   try { appVersion.value = await GetAppVersion() } catch {}
   try { websiteUrl.value = await GetWebsite() } catch {}
@@ -200,6 +213,8 @@ async function autoSave() {
       tabHotkeysEnabled: form.tabHotkeysEnabled,
       emojiEnabled: form.emojiEnabled,
       extendedEmoji: form.extendedEmoji,
+      cmdQBehavior: form.cmdQBehavior,
+      cmdQConfirmWindow: Number(form.cmdQConfirmWindow),
     } as any)
     saveMsg.value = t('saved')
     setTimeout(() => { saveMsg.value = '' }, 1500)
@@ -223,6 +238,15 @@ function onNumberBlur(field: 'maxItems' | 'maxDays') {
   if (loaded.value) autoSave()
 }
 
+// Cmd+Q 确认时间窗：限定 300..10000，避免写入极端值
+function onCmdQWindowBlur() {
+  let n = Number(form.cmdQConfirmWindow)
+  if (!Number.isFinite(n) || n < 300) n = 300
+  if (n > 10000) n = 10000
+  form.cmdQConfirmWindow = Math.floor(n)
+  if (loaded.value) autoSave()
+}
+
 // 所有离散字段：变更即写盘
 watchImmediate(() => form.theme)
 watchImmediate(() => form.language)
@@ -241,7 +265,10 @@ watchImmediate(() => form.emojiEnabled)
 watchImmediate(() => form.extendedEmoji)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
-// 注意：form.maxItems / form.maxDays 不使用 watch，改为输入框 blur/回车时触发保存
+// 扩展功能：Cmd+Q 策略切换即写盘；时间窗用 number 输入的 blur 触发
+watchImmediate(() => form.cmdQBehavior)
+// 注意：form.maxItems / form.maxDays / form.cmdQConfirmWindow 不使用 watch，
+// 改为输入框 blur/回车时触发保存
 
 async function doExport() {
   await ExportDataToFile()
@@ -605,8 +632,9 @@ onMounted(load)
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>
 
-      <!-- 扩展功能 -->
+      <!-- 扩展功能：包含跨平台的 Emoji 区块和仅 macOS 的 Cmd+Q 区块。 -->
       <div v-if="activeTab === 'extensions'" class="panel">
+        <!-- Emoji 总开关 + 显示完整表情库（所有平台） -->
         <div class="section-title">
           <span>{{ t('extEmojiTitle') }}</span>
         </div>
@@ -626,6 +654,44 @@ onMounted(load)
             <label class="toggle"><input type="checkbox" v-model="form.extendedEmoji" /><span class="slider"></span></label>
           </div>
         </div>
+
+        <!-- Cmd+Q 防误触（仅 macOS，非 mac 平台行级隐藏整段） -->
+        <template v-if="isMacPlatform">
+          <div class="section-title">{{ t('cmdQSection') }}</div>
+          <div class="section-card">
+            <div class="card-row stack">
+              <p class="desc-inline">{{ t('cmdQDesc') }}</p>
+            </div>
+            <div class="card-row">
+              <div>
+                <span>{{ t('cmdQBehavior') }}</span>
+                <p class="desc-inline">
+                  <template v-if="form.cmdQBehavior === 'default'">{{ t('cmdQDefaultDesc') }}</template>
+                  <template v-else-if="form.cmdQBehavior === 'confirm'">{{ t('cmdQConfirmDesc') }}</template>
+                  <template v-else>{{ t('cmdQDisableDesc') }}</template>
+                </p>
+              </div>
+              <div class="seg-ctrl seg-sm">
+                <button :class="{ active: form.cmdQBehavior === 'default' }" @click="form.cmdQBehavior = 'default'">{{ t('cmdQDefault') }}</button>
+                <button :class="{ active: form.cmdQBehavior === 'confirm' }" @click="form.cmdQBehavior = 'confirm'">{{ t('cmdQConfirm') }}</button>
+                <button :class="{ active: form.cmdQBehavior === 'disable' }" @click="form.cmdQBehavior = 'disable'">{{ t('cmdQDisable') }}</button>
+              </div>
+            </div>
+            <!-- 仅在 "confirm" 模式下展示时间窗输入，避免迷惑 -->
+            <div v-if="form.cmdQBehavior === 'confirm'" class="card-row">
+              <span>{{ t('cmdQConfirmWindow') }}</span>
+              <div class="input-group">
+                <input
+                  type="number" min="300" max="10000" step="100"
+                  v-model="form.cmdQConfirmWindow"
+                  @blur="onCmdQWindowBlur"
+                  @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+                />
+                <span class="unit">{{ t('cmdQConfirmWindowUnit') }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
 
         <span v-if="saveMsg" class="save-msg floating">{{ saveMsg }}</span>
       </div>

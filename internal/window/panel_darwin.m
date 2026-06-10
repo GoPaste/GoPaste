@@ -91,14 +91,28 @@ static void convert_to_panel_on_main(NSString *title) {
     // 4) 其他面板化行为：
     //    - HidesOnDeactivate=NO：我们自己控制显隐，不要 AppKit 代劳
     //    - BecomesKeyOnlyIfNeeded=NO：让面板能正常成为 key，接收键盘
-    //    - CollectionBehavior：跨 Space / 在全屏应用上可见 / 不被 Expose 动
+    //    - CollectionBehavior：每次 show 主动跟到当前 Space / 在全屏应用上可见 / 不被 Expose 动
     [win setHidesOnDeactivate:NO];
     if ([win isKindOfClass:[NSPanel class]]) {
         [(NSPanel *)win setBecomesKeyOnlyIfNeeded:NO];
         [(NSPanel *)win setFloatingPanel:YES];
     }
+    // ─── 跨 Space 显示策略：MoveToActiveSpace 而不是 CanJoinAllSpaces ───
+    // 之前用 CanJoinAllSpaces，意图是"窗口同时存在于所有 Space"，但实测在
+    // 多个全屏 Space（每个全屏应用自成一个 Space）的环境下，靠后的几个
+    // Space（Mission Control 里位置 4/5/6+）按全局快捷键不显示 —— AppKit
+    // 对 CanJoinAllSpaces 的实现在全屏 Space 多的场景有可观察的退化。
+    //
+    // 改用 MoveToActiveSpace：苹果文档明确说"窗口在 show 时移到当前 active
+    // Space"，专为非激活面板（NonactivatingPanel）跟随用户切 Space 设计。
+    // 两者语义互斥：
+    //   - CanJoinAllSpaces  = 面板恒存在于所有 Space（菜单栏下拉那种）
+    //   - MoveToActiveSpace = 面板按需"跳过来"，更贴合剪贴板/launcher 的
+    //                        "按快捷键弹一下"交互
+    // FullScreenAuxiliary 仍然保留：让面板能浮在 *全屏应用* 的窗口之上而
+    // 不被全屏窗口遮挡。Stationary 让面板不参与 Mission Control 的动画。
     [win setCollectionBehavior:
-        NSWindowCollectionBehaviorCanJoinAllSpaces |
+        NSWindowCollectionBehaviorMoveToActiveSpace |
         NSWindowCollectionBehaviorFullScreenAuxiliary |
         NSWindowCollectionBehaviorStationary];
 
@@ -167,15 +181,45 @@ void GoPasteOrderOut(const char *ctitle) {
 
 // 显示面板：orderFrontRegardless 让面板前置但不激活 app。
 // 配合 makeKeyWindow 让我们的 JS/输入框拿到键盘焦点。
+//
+// ─── 跨 Space 显示的可靠性 ───────────────────────────────────────
+// 用户在 macOS 上可以通过触摸板四指左右滑切换 Space（桌面 / 全屏空间）。
+// 切到非"创建窗口时所在 Space"后按全局快捷键，普通 NSWindow 默认绑定
+// 在原 Space，系统会切回去而不是把窗口带到当前 Space —— 表现为"按了
+// 快捷键好像没反应"（实际上窗口在另一个 Space 出现了）。
+//
+// 解决方案：CollectionBehavior = MoveToActiveSpace + FullScreenAuxiliary。
+// 之前曾用 CanJoinAllSpaces，在普通桌面 Space 间切换没问题，但用户报告
+// 多个全屏 Space（6+ 个，前几个能弹后几个不能）时退化，已切换为
+// MoveToActiveSpace（每次 show 主动跳到当前 active Space，更适合按需弹出
+// 的剪贴板面板）。详见 convert_to_panel_on_main 里的设置注释。
+//
+// 这里 GoPasteOrderFront 在每次 show 前**重新强制设置一次** collectionBehavior
+// + floating level 作为兜底，原因：AppKit 在 makeKeyWindow / 全屏切换 /
+// Mission Control 等路径下会偶发性地清掉非默认的 collectionBehavior，导致
+// 面板"卡"在原 Space。幂等操作、无副作用，但能消除这类回归。
+//
+// 另一个隐形坑：orderFrontRegardless 对 hidden window 才会触发"挪到当前
+// Space"的动作（前提是 MoveToActiveSpace 已设）。顺序不能反——必须先
+// setCollectionBehavior 再 orderFrontRegardless。
 void GoPasteOrderFront(const char *ctitle) {
     if (!ctitle) return;
     NSString *title = [NSString stringWithUTF8String:ctitle];
     run_on_main_async(^{
         NSWindow *win = find_window(title);
-        if (win) {
-            [win orderFrontRegardless];
-            [win makeKeyWindow];
-        }
+        if (!win) return;
+
+        // 兜底重置 collectionBehavior —— 与 convert_to_panel_on_main 保持一致。
+        // 即便 AppKit 中途清空过这些位，这里也能恢复，保证面板能跟到当前 Space。
+        [win setCollectionBehavior:
+            NSWindowCollectionBehaviorMoveToActiveSpace |
+            NSWindowCollectionBehaviorFullScreenAuxiliary |
+            NSWindowCollectionBehaviorStationary];
+        // 浮动层级也一并兜底（同样原因：可能被 AppKit 改回 NSNormalWindowLevel）。
+        [win setLevel:NSFloatingWindowLevel];
+
+        [win orderFrontRegardless];
+        [win makeKeyWindow];
     });
 }
 
@@ -190,6 +234,23 @@ void GoPasteResignKey(const char *ctitle) {
             [win resignKeyWindow];
         }
     });
+}
+
+// GoPasteIsWindowKey 检查指定 title 的窗口当前是否是 keyWindow。
+// 返回 1 (true) / 0 (false)。
+// 供热键回调使用：若面板是 keyWindow，说明用户正在与 GoPaste 交互，
+// 此时不应再触发全局热键动作（如 togglePanel），避免与前端输入法组合冲突。
+int GoPasteIsWindowKey(const char *ctitle) {
+    if (!ctitle) return 0;
+    __block int isKey = 0;
+    NSString *title = [NSString stringWithUTF8String:ctitle];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        NSWindow *win = find_window(title);
+        if (win && [win isKeyWindow]) {
+            isKey = 1;
+        }
+    });
+    return isKey;
 }
 
 // 弹出系统对话框前临时激活 GoPaste。

@@ -98,6 +98,8 @@ const emojiKeyword = ref('')
 const typeFilter = ref<ItemType>('')
 const favoriteOnly = ref(false)
 const selectedIdx = ref(0)
+// Ctrl/Meta 键状态跟踪（用于窗口失焦时重置）
+const ctrlPressed = ref(false)
 const detailContent = ref<string>('')
 const detailVisible = ref(false)
 const detailType = ref<string>('')
@@ -172,6 +174,65 @@ const typeIconMap: Record<string, any> = {
 
 const selected = computed<Item | undefined>(() => items.value[selectedIdx.value])
 
+// 多选状态：存储选中项的 ID（用数组而非 Set，Vue 3 对数组的响应式追踪更精确）
+const selectedIds = ref<number[]>([])
+const hasMultiSelect = computed(() => selectedIds.value.length > 0)
+const selectedItems = computed<Item[]>(() =>
+  items.value.filter(it => selectedIds.value.includes(it.id))
+)
+const selectedCount = computed(() => selectedIds.value.length)
+
+function isSelected(it: Item): boolean {
+  return selectedIds.value.includes(it.id)
+}
+
+function clearSelection() {
+  selectedIds.value = []
+}
+
+// 重写 onItemClick 支持多选
+// 普通点击：清除多选，只选当前条目
+// 注意：Ctrl/Meta+点击由 @click.ctrl / @click.meta 单独处理，但 Vue 仍会触发 @click，
+// 所以这里需要检查事件状态，如果按了修饰键就不执行（让 onItemCtrlClick 处理）
+function onItemClick(idx: number, it: Item, e?: MouseEvent) {
+  // 如果按了 Ctrl 或 Meta 键，跳过（由 onItemCtrlClick 处理）
+  if (e && (e.ctrlKey || e.metaKey)) return
+
+  // 普通点击：清除多选状态，再将当前条目加入选择
+  clearSelection()
+  selectedIds.value = [it.id]
+
+  selectedIdx.value = idx
+  if (pasteTrigger.value !== 'single') return
+  if (singleClickTimer != null) window.clearTimeout(singleClickTimer)
+  singleClickTimer = window.setTimeout(() => {
+    singleClickTimer = null
+    doPaste(it)
+  }, DBLCLICK_THRESHOLD_MS)
+}
+
+// Ctrl/Meta + 点击：切换该条目选中状态（支持反选）
+// 由模板 @click.ctrl / @click.meta 触发，Vue 内置修饰符最可靠
+function onItemCtrlClick(idx: number, it: Item) {
+  if (selectedIds.value.includes(it.id)) {
+    selectedIds.value = selectedIds.value.filter(id => id !== it.id)
+    // 反选后如果没有其他选中项，清除 active 状态
+    if (selectedIds.value.length === 0) {
+      selectedIdx.value = -1
+      return
+    }
+    // 如果还有其他选中项，将 selectedIdx 指向最后一个选中项
+    const lastSelectedId = selectedIds.value[selectedIds.value.length - 1]
+    const lastSelectedIdx = items.value.findIndex(item => item.id === lastSelectedId)
+    if (lastSelectedIdx !== -1) {
+      selectedIdx.value = lastSelectedIdx
+    }
+    return
+  } else {
+    selectedIds.value = [...selectedIds.value, it.id]
+  }
+  selectedIdx.value = idx
+}
 async function refresh(opts?: { silent?: boolean }) {
   // silent=true：切 filter / 切 keyword 等"原地替换"场景，不显示 loading 占位，
   // 避免列表瞬间清空再填回造成的视觉抖动。
@@ -415,23 +476,14 @@ const DBLCLICK_THRESHOLD_MS = 250
 let spacePreviewTimer: number | null = null
 const SPACE_DBLCLICK_THRESHOLD_MS = 200
 
-function onItemClick(idx: number, it: Item) {
-  selectedIdx.value = idx
-  if (pasteTrigger.value !== 'single') return
-  // 延迟执行，若在阈值内触发 dblclick，由 onItemDblClick 取消
-  if (singleClickTimer != null) window.clearTimeout(singleClickTimer)
-  singleClickTimer = window.setTimeout(() => {
-    singleClickTimer = null
-    doPaste(it)
-  }, DBLCLICK_THRESHOLD_MS)
-}
-
 function onItemDblClick(it: Item) {
   // 取消单击模式下排队的 doPaste，避免双重触发
   if (singleClickTimer != null) {
     window.clearTimeout(singleClickTimer)
     singleClickTimer = null
   }
+  // 双击粘贴时清除多选状态
+  clearSelection()
   doPaste(it)
 }
 
@@ -460,15 +512,36 @@ function showAlert(msg: string): Promise<void> {
 }
 function onAlertOk() { alertVisible.value = false; alertResolve?.() }
 
-async function doDelete(it: Item) {
-  if (it.favorite) {
+async function doDelete(it?: Item) {
+  // 批量删除：如果有选中多项，使用选中的列表
+  const itemsToDelete = (selectedIds.value.length > 0)
+    ? selectedItems.value
+    : (it ? [it] : [])
+
+  if (itemsToDelete.length === 0) return
+
+  // 检查是否有收藏项
+  const hasFavorite = itemsToDelete.some(item => item.favorite)
+  if (hasFavorite) {
     await showAlert(t('deleteFavoriteTip'))
     return
   }
-  const ok = await showConfirm(t('confirmDelete'))
+
+  // 确认对话框：单条显示原消息，多条显示条数
+  const msg = itemsToDelete.length === 1
+    ? t('confirmDelete')
+    : t('confirmDeleteMulti', { n: itemsToDelete.length })
+  const ok = await showConfirm(msg)
   if (!ok) return
-  await DeleteItem(it.id)
-  delete imageThumbs.value[it.id]
+
+  // 执行删除
+  for (const item of itemsToDelete) {
+    await DeleteItem(item.id)
+    delete imageThumbs.value[item.id]
+  }
+
+  // 清除多选状态
+  clearSelection()
   await refresh()
 }
 async function doTogglePin(it: Item) { await TogglePin(it.id, !it.pinned); await refresh() }
@@ -542,8 +615,29 @@ const ctxMenu = ref<{ visible: boolean; x: number; y: number; item: Item | null 
   visible: false, x: 0, y: 0, item: null
 })
 
-function onItemContextMenu(e: MouseEvent, it: Item) {
+function onItemContextMenu(e: MouseEvent, it: Item, idx: number) {
   e.preventDefault()
+  selectedIdx.value = idx
+  // 普通右键：
+  //   - 如果条目已在多选集合中，保持多选状态
+  //   - 如果条目不在多选集合中，清除多选只选当前条目
+  if (!selectedIds.value.includes(it.id)) {
+    clearSelection()
+    selectedIds.value = [it.id]
+  }
+  ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, item: it }
+}
+
+// Ctrl/Meta + 右键：切换该条目的选中状态，不清空已有选择
+// 由模板 @contextmenu.ctrl / @contextmenu.meta 触发
+function onItemContextMenuCtrl(e: MouseEvent, it: Item, idx: number) {
+  e.preventDefault()
+  selectedIdx.value = idx
+  if (selectedIds.value.includes(it.id)) {
+    selectedIds.value = selectedIds.value.filter(id => id !== it.id)
+  } else {
+    selectedIds.value = [...selectedIds.value, it.id]
+  }
   ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, item: it }
 }
 function closeCtxMenu() { ctxMenu.value.visible = false }
@@ -564,7 +658,14 @@ async function ctxCopy() { if (ctxMenu.value.item) await doCopy(ctxMenu.value.it
 async function ctxPaste() { if (ctxMenu.value.item) await doPaste(ctxMenu.value.item); closeCtxMenu() }
 async function ctxFav() { if (ctxMenu.value.item) await doToggleFav(ctxMenu.value.item); closeCtxMenu() }
 async function ctxPin() { if (ctxMenu.value.item) await doTogglePin(ctxMenu.value.item); closeCtxMenu() }
-async function ctxDelete() { if (ctxMenu.value.item) await doDelete(ctxMenu.value.item); closeCtxMenu() }
+async function ctxDelete() {
+  if (selectedIds.value.length > 0) {
+    await doDelete()
+  } else if (ctxMenu.value.item) {
+    await doDelete(ctxMenu.value.item)
+  }
+  closeCtxMenu()
+}
 async function ctxDetail() { if (ctxMenu.value.item) await showDetail(ctxMenu.value.item); closeCtxMenu() }
 function ctxNote() { if (ctxMenu.value.item) showNoteDialog(ctxMenu.value.item); closeCtxMenu() }
 async function ctxReveal() { if (ctxMenu.value.item) await doRevealFile(ctxMenu.value.item); closeCtxMenu() }
@@ -686,7 +787,13 @@ async function onWindowShow() {
   if (needRefresh) await refresh({ silent: true })
   if (s.scrollTopOnShow) {
     selectedIdx.value = 0
+    // 先滚动到顶部
     listRef.value?.scrollTo({ top: 0 })
+    // 清除多选状态后，选中首条（让状态栏显示"已选中1条"）
+    clearSelection()
+    if (items.value.length > 0) {
+      selectedIds.value = [items.value[0].id]
+    }
   }
   // 聚焦搜索框
   searchRef.value?.focus()
@@ -784,7 +891,7 @@ function onKeyDown(e: KeyboardEvent) {
   const tabKeyPressed = isMacPlatform
     ? (e.metaKey && !e.ctrlKey && !e.altKey)
     : (e.altKey && !e.ctrlKey && !e.metaKey)
-  if (tabHotkeysEnabled.value && tabKeyPressed) {
+  if (tabHotkeysEnabled.value && tabKeyPressed && !e.isComposing) {
     if (/^[1-6]$/.test(e.key)) {
       const n = parseInt(e.key, 10)
       if (n < typeOptions.value.length) {
@@ -874,15 +981,19 @@ function onKeyDown(e: KeyboardEvent) {
         showDetail(it)
       }, SPACE_DBLCLICK_THRESHOLD_MS)
     }
-  } else if (e.key === 'Enter' && selected.value) {
+  } else if (e.key === 'Enter' && selected.value && !e.isComposing) {
+    // e.isComposing：输入法正在组合（如中文拼音未确认），此时 Enter 只应确认输入法候选词，
+    // 不应触发 GoPaste 的粘贴/执行动作。
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
     if (detailVisible.value) detailVisible.value = false
+    else if (selectedIds.value.length > 0) clearSelection()
     else HideWindow()
-  } else if ((e.key === 'Delete' || e.key === 'Backspace') && !searchHasValue && selected.value) {
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && !searchHasValue && (selected.value || selectedIds.value.length > 0)) {
     // 删除选中项：
     //   - Delete：Win/Linux 键盘 + Mac 外接键盘
     //   - Backspace：Mac 笔记本主键盘区的 ⌫（Mac 上没有独立 Delete 键）
+    //   - 支持多选：按住 Shift 选中多项后按 Delete 批量删除
     // gate 条件用 !searchHasValue（而非 !inSearch）：
     //   - 搜索框有内容时：让 Delete/Backspace 作为原生文本编辑键，避免每按一次
     //     退格就删一条历史记录
@@ -891,7 +1002,8 @@ function onKeyDown(e: KeyboardEvent) {
     //   - 焦点不在搜索框（inSearch=false → searchHasValue 必然也为 false）：照常触发
     // preventDefault 避免 WebView2/Chromium 把空框里的 Backspace 当"导航后退"吞掉。
     e.preventDefault()
-    doDelete(selected.value)
+    // 多选状态下直接调用 doDelete()（不传参数），函数内部会读取 selectedItems
+    doDelete()
   }
 }
 
@@ -902,6 +1014,12 @@ onMounted(async () => {
   const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent) || /Mac|iPhone|iPad/.test((navigator as any).platform || '')
   document.documentElement.setAttribute('data-os', isMac ? 'mac' : 'other')
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('compositionstart', () => {
+    (window as any).go?.main.App.SetIsComposing(true)
+  })
+  window.addEventListener('compositionend', () => {
+    (window as any).go?.main.App.SetIsComposing(false)
+  })
   window.addEventListener('blur', onWindowBlur)
   window.addEventListener('resize', syncWebViewBg)
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -925,8 +1043,24 @@ onMounted(async () => {
   syncWebViewBg()
   await refresh()
   EventsOn('clipboard:new', async () => { await refresh() })
+  // "扩展功能" Cmd+Q 防误触：后端拦截到 Cmd+Q 时 emit 此事件，前端显示轻量 toast。
+  // reason: "confirm-first"（首次按下，进入确认窗口）/ "confirm-timeout"（窗口过期）/ "disabled"（禁用状态被按下）
+  EventsOn('cmdq:intercepted', (reason: string) => {
+    if (reason === 'confirm-first') {
+      showCmdQToast(t('cmdQToastConfirm'))
+    } else if (reason === 'disabled') {
+      showCmdQToast(t('cmdQToastDisabled'))
+    } else if (reason === 'confirm-timeout') {
+      hideCmdQToast()
+    }
+  })
+  // 托盘菜单"设置"项：后端 emit 此事件让前端切换到设置视图。
   EventsOn('view:settings', () => { view.value = 'settings' })
-  unsubscribe = () => { EventsOff('clipboard:new'); EventsOff('window:show'); EventsOff('tab:switch'); EventsOff('view:settings') }
+  unsubscribe = () => {
+    EventsOff('clipboard:new'); EventsOff('window:show')
+    EventsOff('tab:switch'); EventsOff('cmdq:intercepted')
+    EventsOff('view:settings')
+  }
 
   // 冷启动焦点：由 Go 端 domReady 在窗口可见时主动 emit 'window:show'，
   // 走和热启动一致的 onWindowShow 路径（聚焦搜索框、激活副作用）。
@@ -1015,6 +1149,7 @@ function metaParts(it: Item): string[] {
 
 // 窗口失焦自动隐藏
 function onWindowBlur() {
+  ctrlPressed.value = false  // 保险：重置 Ctrl/Meta 状态
   if (alwaysOnTop.value) return
   if (suppressBlurHide.value > 0) return  // 原生对话框打开期间不自动隐藏
   setTimeout(() => {
@@ -1027,6 +1162,27 @@ function onWindowBlur() {
   }, 150)
 }
 
+// ---- Cmd+Q 防误触 toast ----
+// 显示在面板底部的轻量提示，不会拦截键盘或鼠标。
+// 展示时长：3.5s 自动消失；confirm-timeout 会提前手动 hide。
+const cmdQToastText = ref('')
+const cmdQToastVisible = ref(false)
+let cmdQToastTimer: number | null = null
+function showCmdQToast(msg: string) {
+  cmdQToastText.value = msg
+  cmdQToastVisible.value = true
+  if (cmdQToastTimer != null) { window.clearTimeout(cmdQToastTimer); cmdQToastTimer = null }
+  cmdQToastTimer = window.setTimeout(() => {
+    cmdQToastVisible.value = false
+    cmdQToastTimer = null
+  }, 3500)
+}
+function hideCmdQToast() {
+  cmdQToastVisible.value = false
+  if (cmdQToastTimer != null) { window.clearTimeout(cmdQToastTimer); cmdQToastTimer = null }
+}
+
+// ---- Emoji 选中/粘贴 toast ----
 // Emoji 选中：写入系统剪贴板并显示 toast 反馈
 const emojiToast = ref('')
 let emojiToastTimer: number | null = null
@@ -1142,9 +1298,14 @@ function showEmojiToast(msg: string) {
 
         <div v-for="(it, idx) in items" :key="it.id" class="item"
           :data-idx="idx"
-          :class="{ active: idx === selectedIdx, pinned: it.pinned }"
-          @click="onItemClick(idx, it)" @dblclick="onItemDblClick(it)"
-          @contextmenu="onItemContextMenu($event, it)">
+          :class="{ active: idx === selectedIdx, pinned: it.pinned, 'multi-selected': isSelected(it) }"
+          @click.ctrl="onItemCtrlClick(idx, it)"
+          @click.meta="onItemCtrlClick(idx, it)"
+          @click="onItemClick(idx, it, $event)"
+          @dblclick="onItemDblClick(it)"
+          @contextmenu.ctrl="onItemContextMenuCtrl($event, it, idx)"
+          @contextmenu.meta="onItemContextMenuCtrl($event, it, idx)"
+          @contextmenu="onItemContextMenu($event, it, idx)">
 
           <!-- 第一行：元信息 + 操作按钮 -->
           <div class="item-row1">
@@ -1228,7 +1389,8 @@ function showEmojiToast(msg: string) {
       </Transition>
 
       <footer v-if="view === 'main'" class="statusbar">
-        <span>{{ total }} {{ t('records') }}</span>
+        <span v-if="selectedCount > 0">{{ t('selectedCount', { n: selectedCount }) }} | {{ total }} {{ t('records') }}</span>
+        <span v-else>{{ total }} {{ t('records') }}</span>
         <span class="dim">{{ t('statusHint') }}</span>
       </footer>
       <footer v-else-if="view === 'emoji'" class="statusbar">
@@ -1281,25 +1443,31 @@ function showEmojiToast(msg: string) {
     <Transition name="fade">
       <div v-if="ctxMenu.visible" class="ctx-mask" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
         <div class="ctx-menu" :style="ctxMenuStyle" @click.stop>
-          <button @click="ctxPaste"><Copy :size="14" /> {{ t('paste') }}</button>
-          <button @click="ctxCopy"><Copy :size="14" /> {{ t('copy') }}</button>
-          <button @click="ctxDetail"><Eye :size="14" /> {{ t('viewDetail') }}</button>
-          <button @click="ctxNote"><Edit3 :size="14" /> {{ t('note') }}</button>
-          <div class="ctx-sep"></div>
-          <button @click="ctxFav">
-            <Star :size="14" /> {{ ctxMenu.item?.favorite ? t('unfavorite') : t('favorite') }}
-          </button>
-          <button v-if="ctxMenu.item?.type === 'image'" @click="ctxSaveImage">
-            <Download :size="14" /> {{ t('saveImage') }}
-          </button>
-          <button v-if="ctxMenu.item?.type === 'file'" @click="ctxReveal">
-            <FolderOpen :size="14" /> {{ t('revealInExplorer') }}
-          </button>
-          <button v-if="ctxMenu.item?.type === 'link'" @click="ctxOpenInBrowser">
-            <ExternalLink :size="14" /> {{ t('openInBrowser') }}
-          </button>
-          <div class="ctx-sep"></div>
-          <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> {{ t('delete') }}</button>
+          <!-- 多选状态下只显示批量删除，避免歧义 -->
+          <template v-if="selectedIds.length > 1">
+            <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> {{ t('batchDelete') }}</button>
+          </template>
+          <template v-else>
+            <button @click="ctxPaste"><Copy :size="14" /> {{ t('paste') }}</button>
+            <button @click="ctxCopy"><Copy :size="14" /> {{ t('copy') }}</button>
+            <button @click="ctxDetail"><Eye :size="14" /> {{ t('viewDetail') }}</button>
+            <button @click="ctxNote"><Edit3 :size="14" /> {{ t('note') }}</button>
+            <div class="ctx-sep"></div>
+            <button @click="ctxFav">
+              <Star :size="14" /> {{ ctxMenu.item?.favorite ? t('unfavorite') : t('favorite') }}
+            </button>
+            <button v-if="ctxMenu.item?.type === 'image'" @click="ctxSaveImage">
+              <Download :size="14" /> {{ t('saveImage') }}
+            </button>
+            <button v-if="ctxMenu.item?.type === 'file'" @click="ctxReveal">
+              <FolderOpen :size="14" /> {{ t('revealInExplorer') }}
+            </button>
+            <button v-if="ctxMenu.item?.type === 'link'" @click="ctxOpenInBrowser">
+              <ExternalLink :size="14" /> {{ t('openInBrowser') }}
+            </button>
+            <div class="ctx-sep"></div>
+            <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> {{ t('delete') }}</button>
+          </template>
         </div>
       </div>
     </Transition>
@@ -1352,6 +1520,10 @@ function showEmojiToast(msg: string) {
           </div>
         </div>
       </div>
+    </Transition>
+    <!-- 扩展功能：Cmd+Q toast（仅 macOS 会触发，非 mac 永远 visible=false） -->
+    <Transition name="fade">
+      <div v-if="cmdQToastVisible" class="cmdq-toast">{{ cmdQToastText }}</div>
     </Transition>
   </div>
 </template>
@@ -1471,10 +1643,12 @@ html, body, #app {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-light);
   cursor: pointer; transition: all .12s;
+  user-select: none;
 }
 .item:hover { background: var(--bg-hover); }
 .item.active { background: var(--bg-active); border-left: 3px solid #3b82f6; }
 .item.pinned { border-left: 3px solid #3b82f6; }
+.item.multi-selected { background: var(--bg-active); }
 
 .item-row1 {
   display: flex; justify-content: space-between; align-items: center;
@@ -1741,6 +1915,30 @@ html, body, #app {
 .note-input {
   background: var(--bg); border: 1.5px solid var(--accent); color: var(--text);
   padding: 8px 12px; border-radius: 6px; font-size: 14px; outline: none;
+}
+
+/* 扩展功能：Cmd+Q 防误触 toast。
+   - 悬浮在面板底部居中，不阻塞键盘/鼠标操作（pointer-events:none）。
+   - 颜色用 --warning 强调"待确认"状态，与普通 saveMsg 区分。
+   - 与 .fade 过渡配合（Transition name="fade"）。 */
+.cmdq-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 40px);
+  padding: 8px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--warning, #f59e0b);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.4;
+  box-shadow: 0 6px 18px rgba(0,0,0,.25);
+  z-index: 300;
+  pointer-events: none;
+  white-space: nowrap;
+  text-align: center;
 }
 
 /* 内容区域容器：包含 list 和 emoji picker，用于绝对定位参照 */

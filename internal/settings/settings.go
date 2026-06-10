@@ -30,6 +30,16 @@ type Settings struct {
 	TrayIconStyle     string   `json:"trayIconStyle"`     // 菜单栏图标风格："color"（彩色）| "gray"（灰色）
 	AutoStart         bool     `json:"autoStart"`         // 开机自启动
 	TabHotkeysEnabled bool     `json:"tabHotkeysEnabled"` // 是否启用 Alt+1..6 全局切分类热键（关掉避免与其它软件冲突）
+
+	// 扩展功能 —— macOS Cmd+Q 防误触
+	// CmdQBehavior：
+	//   "default" | ""（缺省）— 保留系统原生行为，按下立即退出
+	//   "confirm"            — 二次确认：按一次 Cmd+Q 弹 toast，时间窗内再按一次才退出
+	//   "disable"            — 完全禁用，仅通过托盘/标题栏等其他方式退出
+	// 仅 macOS 生效；非 macOS 平台前端隐藏相关 UI，字段保留以便跨设备同步配置。
+	CmdQBehavior      string `json:"cmdQBehavior"`
+	CmdQConfirmWindow int    `json:"cmdQConfirmWindow"` // confirm 模式下的时间窗（毫秒），默认 1500
+
 	// EmojiEnabled Emoji 功能总开关（默认开启）。
 	// 关闭：前端不挂载 EmojiPicker、不显示 emoji tab，组件 onBeforeUnmount 会释放
 	//      已构建的 sprite blob URL 等资源；同时不会触发任何 prewarm。
@@ -65,6 +75,8 @@ func Default() Settings {
 		TrayIconStyle:     "color",
 		AutoStart:         false,
 		TabHotkeysEnabled: true,
+		CmdQBehavior:      "default",
+		CmdQConfirmWindow: 1500,
 		EmojiEnabled:      true,
 		ExtendedEmoji:     false,
 	}
@@ -101,6 +113,13 @@ func Open(path string) (*Store, error) {
 	// 兼容旧配置：如果未设置 PasteTrigger，默认使用双击（与旧版 autoPaste=true 等价）
 	if s.cur.PasteTrigger == "" {
 		s.cur.PasteTrigger = "double"
+	}
+	// 兼容旧配置：CmdQ 相关字段缺失时回填默认值
+	if s.cur.CmdQBehavior == "" {
+		s.cur.CmdQBehavior = "default"
+	}
+	if s.cur.CmdQConfirmWindow <= 0 {
+		s.cur.CmdQConfirmWindow = 1500
 	}
 	return s, nil
 }

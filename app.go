@@ -22,6 +22,7 @@ import (
 	"gopaste/internal/config"
 	"gopaste/internal/crypto"
 	"gopaste/internal/cursor"
+	"gopaste/internal/extensions"
 	"gopaste/internal/hotkey"
 	"gopaste/internal/paste"
 	"gopaste/internal/settings"
@@ -67,6 +68,23 @@ type App struct {
 	// 这里用 TryLock 保证同时只有一次 PasteItem 在跑，重入直接忽略。
 	pasteMu sync.Mutex
 
+	// togglePanel 串行化：
+	// hotkey 回调现在改为 `go fn()`（避免中转 goroutine 阻塞主线程 runloop），
+	// 因此用户连按主热键会并发进入 togglePanel。显隐动作本身涉及：
+	//   - setVisible 读写 windowVisible（已有 visMu，单点无问题）
+	//   - window.ShowMain/HideMain 异步 dispatch 到主线程
+	//   - positionWindow() 读写 lastX/lastY（无锁）
+	//   - wailsruntime.EventsEmit 通知前端
+	// 两次并发只会产生"显隐抖动"而非崩溃，但用户体感很差。TryLock 直接丢弃
+	// 冲突的第二次调用 —— 主热键的语义就是"切换"，丢一次等价于"按了又按"。
+	toggleMu sync.Mutex
+
+	// isComposing 由前端 compositionstart/compositionend 通过 SetIsComposing 设置。
+	// togglePanel 开头读取：若正在组合（如中文拼音未确认），热键（如 Enter）
+	// 应只交给输入法处理，不触发 togglePanel，避免把面板突然隐藏。
+	isComposing bool
+	compMu      sync.Mutex
+
 	// macOS 辅助功能权限引导对话框去重：进程内只弹一次。
 	// 详见 showAccessibilityGuide() 的注释。
 	accessGuideOnce sync.Once
@@ -88,6 +106,14 @@ func bootProbeApp(stage string) { bootProbe(stage) }
 func (a *App) startup(ctx context.Context) {
 	bootProbeApp("startup: enter")
 	a.ctx = ctx
+
+	// 关闭 OS 层 Power Throttling（Windows 11 默认会对没有 foreground
+	// 窗口的"后台进程"做激进 EcoQoS 节流，长时间空闲后甚至完全 suspend
+	// 我们的所有线程，导致热键唤起卡死）。这一步必须放在最前面：越早
+	// 标记越好，避免启动期间就被 OS 节流策略影响。
+	// 非 Windows 平台是 no-op。
+	window.DisablePowerThrottling()
+	bootProbeApp("startup: power throttling disabled")
 
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -223,6 +249,20 @@ func (a *App) startup(ctx context.Context) {
 	// Wails startup 回调不保证 NSWindow 已挂到 [NSApp windows]，所以轮询。
 	go a.convertMainWindowToPanelWithRetry()
 
+	// 10) macOS：Cmd+Q 防误触拦截（"扩展功能"）。
+	// - L1/L2（sendEvent: swizzle + local monitor）：仅 GoPaste 自身前台生效，无需权限
+	// - L0（CGEventTap）：全局拦截（任何 App 前台均生效），需「输入监控」权限
+	// 非 macOS 平台 Install/Set/Tap 均为 no-op，无须再做 GOOS 判断。
+	extensions.InstallCmdQGuard(a.onCmdQIntercepted)
+	extensions.SetCmdQBehavior(extensions.NormalizeCmdQBehavior(s.CmdQBehavior))
+	if s.CmdQConfirmWindow > 0 {
+		extensions.SetCmdQConfirmWindowMs(s.CmdQConfirmWindow)
+	}
+	// 尝试启用 L0 全局拦截。只有 disable/confirm 模式下才需要全局。
+	extensions.DebugLog(fmt.Sprintf("[diag] startup will spawn applyCmdQGlobalTap, raw=%q normalized=%q",
+		s.CmdQBehavior, string(extensions.NormalizeCmdQBehavior(s.CmdQBehavior))))
+	go a.applyCmdQGlobalTap(extensions.NormalizeCmdQBehavior(s.CmdQBehavior))
+
 	a.log.Info("GoPaste started", "data", paths.Root)
 }
 
@@ -301,7 +341,17 @@ func (a *App) registerHotkey() {
 		_ = a.hotkey.Close()
 		a.hotkey = nil
 	}
-	hk, err := hotkey.New(a.ctx, s.HotkeyModifiers, s.HotkeyKey, a.togglePanel)
+	hk, err := hotkey.New(a.ctx, s.HotkeyModifiers, s.HotkeyKey, func() {
+		// 输入法正在组合（如中文拼音未确认），此时热键（如 Enter）只应
+		// 交给输入法处理，不应触发 togglePanel，避免把面板突然隐藏。
+		a.compMu.Lock()
+		composing := a.isComposing
+		a.compMu.Unlock()
+		if composing {
+			return
+		}
+		a.togglePanel()
+	})
 	if err != nil {
 		a.log.Warn("hotkey register failed", "err", err, "mods", s.HotkeyModifiers, "key", s.HotkeyKey)
 		return
@@ -341,6 +391,18 @@ func (a *App) showPanelAndSwitchTab(idx int) {
 	if a.ctx == nil {
 		return
 	}
+	// 输入法正在组合（如中文拼音未确认），此时热键只应交给输入法处理，
+	// 不应触发 tab 切换，避免把面板突然隐藏或切走。
+	a.compMu.Lock()
+	composing := a.isComposing
+	a.compMu.Unlock()
+	if composing {
+		return
+	}
+	if !a.toggleMu.TryLock() {
+		return
+	}
+	defer a.toggleMu.Unlock()
 	// 唤起窗口（若已显示则保持显示，不要切换隐藏 → 与 togglePanel 不同）
 	// 注意事件顺序：先 emit "tab:switch" 再 emit "window:show"。
 	// 前端 onWindowShow 中需要根据 tab:switch 设置的标志位跳过
@@ -542,17 +604,59 @@ func (a *App) saveWindowPosition() {
 
 // togglePanel 切换主窗口的可见状态：若已显示则隐藏，否则显示并置顶。
 // 由托盘左键点击和全局快捷键共享。
+//
+// 已知偶发现象：长时间运行后（如几小时空闲），按热键无反应，且托盘也点不
+// 动。日志最后停在 "focus: captured prev window"——说明 captureFocusBeforeShow
+// 跑完了，但后续的 wails runtime 调用要么没真正生效要么直接卡住。
+//
+// 每一步都打 boot probe，并启动一个 5 秒 watchdog：若整个 togglePanel 没在
+// 5 秒内返回（典型耗时 < 100ms），自动 dump 全部 goroutine stack 到 boot.log。
+// 这样下次复现时能看到主线程到底卡在哪一行（WindowShow / EventsEmit / …）。
 func (a *App) togglePanel() {
 	if a.ctx == nil {
 		return
 	}
-	if wailsruntime.WindowIsMinimised(a.ctx) {
+	// 热键回调现在走 `go fn()`，用户连按会并发进入。TryLock 直接丢弃
+	// 冲突的那次；toggle 的语义是"切换"，丢掉相邻一次等价于"又按了回来"。
+	if !a.toggleMu.TryLock() {
+		return
+	}
+	defer a.toggleMu.Unlock()
+
+	bootProbeApp("togglePanel: enter")
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-time.After(5 * time.Second):
+			// 卡了 5 秒还没返回 → 大概率死锁/挂起。把所有 goroutine 的栈都
+			// 打出来，方便诊断到底卡在哪个 syscall / channel / mutex。
+			buf := make([]byte, 1<<20) // 1MB 应该够 dump 全部 goroutine
+			n := runtime.Stack(buf, true)
+			bootProbeApp("togglePanel: WATCHDOG TIMEOUT — goroutine dump follows")
+			bootProbeApp(string(buf[:n]))
+		}
+	}()
+	defer close(done)
+	defer bootProbeApp("togglePanel: exit")
+
+	bootProbeApp("togglePanel: WindowIsMinimised?")
+	minimised := wailsruntime.WindowIsMinimised(a.ctx)
+	bootProbeApp(fmt.Sprintf("togglePanel: minimised=%v", minimised))
+
+	if minimised {
 		a.captureFocusBeforeShow()
+		bootProbeApp("togglePanel: before WindowUnminimise")
 		wailsruntime.WindowUnminimise(a.ctx)
+		bootProbeApp("togglePanel: before ShowMain")
 		window.ShowMain(a.ctx)
+		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
 		a.setVisible(true)
+		bootProbeApp("togglePanel: before EventsEmit window:show")
 		wailsruntime.EventsEmit(a.ctx, "window:show")
+		bootProbeApp("togglePanel: emit done (minimised path)")
 		return
 	}
 	a.visMu.Lock()
@@ -560,18 +664,35 @@ func (a *App) togglePanel() {
 	a.visMu.Unlock()
 
 	if visible {
+		bootProbeApp("togglePanel: hide path")
 		a.saveWindowPosition()
 		window.HideMain(a.ctx)
 		a.setVisible(false)
+		bootProbeApp("togglePanel: hide done")
 	} else {
+		bootProbeApp("togglePanel: show path")
 		a.captureFocusBeforeShow()
+		bootProbeApp("togglePanel: before ShowMain")
 		window.ShowMain(a.ctx)
+		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
 		a.setVisible(true)
 		// 通知前端窗口已显示，触发"激活时回到顶部 / 切换至全部分组"等逻辑。
 		// Windows 上 visibilitychange 不一定由 WindowShow 触发，所以需要显式 emit。
+		bootProbeApp("togglePanel: before EventsEmit window:show")
 		wailsruntime.EventsEmit(a.ctx, "window:show")
+		bootProbeApp("togglePanel: emit done (show path)")
 	}
+}
+
+// SetIsComposing 由前端调用，通知后端输入法是否正在组合。
+// compositionstart 时设 true，compositionend 时设 false。
+// togglePanel / showPanelAndSwitchTab 开头会读取此状态，
+// 若正在组合则跳过热键动作。
+func (a *App) SetIsComposing(v bool) {
+	a.compMu.Lock()
+	defer a.compMu.Unlock()
+	a.isComposing = v
 }
 
 // showPanel 无条件显示窗口（用于 Dock 图标点击）。
@@ -579,6 +700,11 @@ func (a *App) showPanel() {
 	if a.ctx == nil {
 		return
 	}
+	// Dock 点击本身频率不会高，但与热键/托盘并发时仍要防止显隐抖动。
+	if !a.toggleMu.TryLock() {
+		return
+	}
+	defer a.toggleMu.Unlock()
 	if wailsruntime.WindowIsMinimised(a.ctx) {
 		wailsruntime.WindowUnminimise(a.ctx)
 	}
@@ -1082,6 +1208,72 @@ func (a *App) QuitApp() {
 	a.quitApp()
 }
 
+// onCmdQIntercepted 当 macOS Cmd+Q 被"扩展功能"拦截时，由 extensions 包调用。
+// reason 取值：
+//   - "confirm-first"   ：第一次按下 Cmd+Q，进入确认窗口，前端应提示"再按一次 Cmd+Q 退出"
+//   - "confirm-timeout" ：确认窗口已过期，前端应隐藏提示
+//   - "disabled"        ：当前策略为禁用，前端提示"Cmd+Q 已禁用"
+//
+// 这里只负责把事件 emit 给前端，toast 样式在 App.vue 中处理。
+func (a *App) onCmdQIntercepted(reason string) {
+	if a.ctx == nil {
+		return
+	}
+	wailsruntime.EventsEmit(a.ctx, "cmdq:intercepted", reason)
+}
+
+// applyCmdQGlobalTap 按当前策略启用/停用 L0 全局 Cmd+Q 拦截（CGEventTap）。
+// - default   → 停用（允许其他 App 正常 Cmd+Q）
+// - confirm/disable → 启用；若未授权输入监控则自动降级到 L1（仅 GoPaste 前台）
+//
+// 非 macOS 平台此函数为 no-op（底层 API 全部是 no-op）。
+func (a *App) applyCmdQGlobalTap(b extensions.CmdQBehavior) {
+	extensions.DebugLog("[diag] applyCmdQGlobalTap entered, behavior=" + string(b))
+	a.log.Info("cmdq: applyCmdQGlobalTap called", "behavior", string(b))
+	if b == extensions.CmdQDefault {
+		extensions.CmdQTapStop()
+		extensions.DebugLog("[diag] behavior=default, L0 stopped")
+		a.log.Info("cmdq: behavior=default, L0 stopped")
+		return
+	}
+	status := extensions.CmdQTapAuthStatus()
+	extensions.DebugLog(fmt.Sprintf("[diag] tap auth status=%d (0=unknown,1=granted,2=denied)", int(status)))
+	a.log.Info("cmdq: tap auth status", "status", int(status))
+	switch status {
+	case extensions.TapAuthGranted:
+		ok := extensions.CmdQTapStart()
+		extensions.DebugLog(fmt.Sprintf("[diag] CmdQTapStart returned ok=%v", ok))
+		a.log.Info("cmdq: CmdQTapStart returned", "ok", ok)
+		if ok {
+			a.log.Info("cmdq: L0 global tap enabled")
+		} else {
+			a.log.Warn("cmdq: L0 global tap start failed, fallback to L1")
+		}
+	case extensions.TapAuthUnknown:
+		// 首次：触发系统授权弹窗。用户同意 → 继续启用；拒绝 → 打开设置页引导。
+		granted := extensions.CmdQTapRequestAccess()
+		if granted {
+			if extensions.CmdQTapStart() {
+				a.log.Info("cmdq: L0 global tap enabled after first-grant")
+				return
+			}
+		}
+		// 首次弹窗在进程生命周期内生效不可靠（用户常需勾选后重启 App），
+		// 打开系统设置页引导 + 前端 toast 提示。
+		extensions.OpenInputMonitoringPrefs()
+		if a.ctx != nil {
+			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", "unknown")
+		}
+		a.log.Warn("cmdq: L0 tap needs input-monitoring permission, fallback to L1")
+	case extensions.TapAuthDenied:
+		extensions.OpenInputMonitoringPrefs()
+		if a.ctx != nil {
+			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", "denied")
+		}
+		a.log.Warn("cmdq: L0 tap denied by user, fallback to L1")
+	}
+}
+
 // GetSettings 返回当前偏好设置。
 func (a *App) GetSettings() settings.Settings {
 	if a.settings == nil {
@@ -1143,6 +1335,16 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 			a.log.Error("set autostart", "enabled", ns.AutoStart, "err", err)
 			// 不中断 UpdateSettings，只记录日志
 		}
+	}
+
+	// 扩展功能：Cmd+Q 行为 / 确认时间窗实时同步。
+	// extensions 包在非 macOS 平台均为 no-op，这里无需 GOOS 判断。
+	if prev.CmdQBehavior != ns.CmdQBehavior {
+		extensions.SetCmdQBehavior(extensions.NormalizeCmdQBehavior(ns.CmdQBehavior))
+		go a.applyCmdQGlobalTap(extensions.NormalizeCmdQBehavior(ns.CmdQBehavior))
+	}
+	if prev.CmdQConfirmWindow != ns.CmdQConfirmWindow && ns.CmdQConfirmWindow > 0 {
+		extensions.SetCmdQConfirmWindowMs(ns.CmdQConfirmWindow)
 	}
 
 	return nil

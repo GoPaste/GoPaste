@@ -76,11 +76,31 @@ const zh: Record<string, string> = {
   'emoji': 'Emoji', 'emojiHint': '单击 复制 · 双击 粘贴', 'emojiCopied': '已复制', 'emojiPasted': '已粘贴',
   // 扩展功能
   'navExtensions': '扩展功能',
+  'extTitle': '扩展功能',
+  'extMacOnlyTip': '当前设置仅在 macOS 上生效。',
+  // 扩展功能 · Emoji
   'extEmojiTitle': 'Emoji',
   'extEmojiEnabled': '启用 Emoji 功能',
   'extEmojiEnabledDesc': '关闭后将隐藏 Emoji 入口并释放相关内存占用，再次开启会重新加载。',
   'extEmojiFull': '显示完整表情库',
   'extEmojiFullDesc': '默认关闭「物品 / 旗帜」分类与肤色切换，开启后显示全部并允许切换肤色。',
+  // 扩展功能 · Command+Q 行为（仅 macOS）
+  'cmdQSection': 'Command + Q 行为',
+  'cmdQDesc': '防止误触 Command+Q 导致 GoPaste 意外退出。',
+  'cmdQBehavior': '按下 Command+Q 时',
+  'cmdQDefault': '立即退出',
+  'cmdQConfirm': '二次确认',
+  'cmdQDisable': '禁用退出',
+  'cmdQDefaultDesc': '保持 macOS 原生行为，按下立即退出。',
+  'cmdQConfirmDesc': '第一次按 Command+Q 仅提示，在时间窗内再按一次才真正退出。',
+  'cmdQDisableDesc': '完全忽略 Command+Q；可通过菜单栏/托盘菜单的"退出"项退出应用。',
+  'cmdQConfirmWindow': '确认时间窗',
+  'cmdQConfirmWindowUnit': '毫秒',
+  'cmdQToastConfirm': '再按一次 Command+Q 退出 GoPaste',
+  'cmdQToastDisabled': 'Command+Q 已禁用，可在「扩展功能」中修改',
+  'confirmDeleteMulti': '确定删除选中的 {n} 条记录？',
+  'selectedCount': '已选 {n} 条',
+  'batchDelete': '批量删除',
 }
 
 const zhTW: Record<string, string> = {
@@ -154,13 +174,33 @@ const zhTW: Record<string, string> = {
   'restartRequired': '重啟後生效',
   'clearSearch': '清除搜尋',
   'emoji': 'Emoji', 'emojiHint': '單擊 複製 · 雙擊 貼上', 'emojiCopied': '已複製',
-  // 擴充功能
-  'navExtensions': '擴充功能',
+  // 擴展功能
+  'navExtensions': '擴展功能',
+  'extTitle': '擴展功能',
+  'extMacOnlyTip': '目前設定僅在 macOS 上生效。',
+  // 擴展功能 · Emoji
   'extEmojiTitle': 'Emoji',
   'extEmojiEnabled': '啟用 Emoji 功能',
   'extEmojiEnabledDesc': '關閉後將隱藏 Emoji 入口並釋放相關記憶體佔用，再次開啟會重新載入。',
   'extEmojiFull': '顯示完整表情庫',
   'extEmojiFullDesc': '預設關閉「物品 / 旗幟」分類與膚色切換，開啟後顯示全部並允許切換膚色。',
+  // 擴展功能 · Command+Q 行為（僅 macOS）
+  'cmdQSection': 'Command + Q 行為',
+  'cmdQDesc': '防止誤觸 Command+Q 導致 GoPaste 意外退出。',
+  'cmdQBehavior': '按下 Command+Q 時',
+  'cmdQDefault': '立即退出',
+  'cmdQConfirm': '二次確認',
+  'cmdQDisable': '停用退出',
+  'cmdQDefaultDesc': '保持 macOS 原生行為，按下立即退出。',
+  'cmdQConfirmDesc': '第一次按 Command+Q 僅提示，在時間視窗內再按一次才真正退出。',
+  'cmdQDisableDesc': '完全忽略 Command+Q；可透過選單列/托盤選單的「退出」項目退出應用程式。',
+  'cmdQConfirmWindow': '確認時間視窗',
+  'cmdQConfirmWindowUnit': '毫秒',
+  'cmdQToastConfirm': '再按一次 Command+Q 退出 GoPaste',
+  'cmdQToastDisabled': 'Command+Q 已停用，可在「擴展功能」中修改',
+  'confirmDeleteMulti': '確定刪除選中的 {n} 筆記錄？',
+  'selectedCount': '已選 {n} 筆',
+  'batchDelete': '批量刪除',
 }
 
 const en: Record<string, string> = {
@@ -236,11 +276,31 @@ const en: Record<string, string> = {
   'emoji': 'Emoji', 'emojiHint': 'Click copy · Double-click paste', 'emojiCopied': 'Copied', 'emojiPasted': 'Pasted',
   // Extensions
   'navExtensions': 'Extensions',
+  'extTitle': 'Extensions',
+  'extMacOnlyTip': 'These settings only take effect on macOS.',
+  // Extensions · Emoji
   'extEmojiTitle': 'Emoji',
   'extEmojiEnabled': 'Enable emoji feature',
   'extEmojiEnabledDesc': 'When off, the emoji entry is hidden and its resources are freed. Turning it back on reloads them.',
   'extEmojiFull': 'Show full emoji set',
   'extEmojiFullDesc': 'Objects / Flags categories and skin-tone switching are off by default. Turn on to show everything and enable skin-tone switching.',
+  // Extensions · Command+Q behavior (macOS only)
+  'cmdQSection': 'Command + Q Behavior',
+  'cmdQDesc': 'Prevent accidental Command+Q from quitting GoPaste.',
+  'cmdQBehavior': 'When Command+Q is pressed',
+  'cmdQDefault': 'Quit immediately',
+  'cmdQConfirm': 'Require confirmation',
+  'cmdQDisable': 'Disable quit',
+  'cmdQDefaultDesc': 'Keep the native macOS behavior — quit on press.',
+  'cmdQConfirmDesc': 'First press only shows a hint; press Command+Q again within the window to actually quit.',
+  'cmdQDisableDesc': 'Completely ignore Command+Q. You can still quit via the menu bar / tray "Quit" item.',
+  'cmdQConfirmWindow': 'Confirmation window',
+  'cmdQConfirmWindowUnit': 'ms',
+  'cmdQToastConfirm': 'Press Command+Q again to quit GoPaste',
+  'cmdQToastDisabled': 'Command+Q is disabled. Change it in Extensions settings.',
+  'confirmDeleteMulti': 'Delete {n} selected records?',
+  'selectedCount': '{n} selected',
+  'batchDelete': 'Batch Delete',
 }
 
 const messages: Record<Lang, Record<string, string>> = { zh, 'zh-TW': zhTW, en }

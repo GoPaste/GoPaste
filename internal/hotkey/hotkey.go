@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	hk "golang.design/x/hotkey"
 )
@@ -19,7 +20,13 @@ type Manager struct {
 	hotkey *hk.Hotkey
 	cancel context.CancelFunc
 
-	// 附加快捷键：每个元素都有自己的 hotkey 句柄 + 监听 goroutine 的 cancel
+	// extras 的读写发生在：
+	//   - Add（app.registerHotkey 启动期 & UpdateSettings 里调用）
+	//   - Close（shutdown & UpdateSettings 重注册前会先关）
+	// UpdateSettings 触发时，旧 Manager 的 Close 与新 Manager 的 Add 会相继进入
+	// 同一个对象 —— 实际上不会，因为 app 层每次都是 new 一个新 Manager。但并发
+	// 安全还是显式加锁更稳。
+	mu     sync.Mutex
 	extras []*Manager
 }
 
@@ -45,12 +52,34 @@ func New(ctx context.Context, modifiers []string, key string, fn func()) (*Manag
 
 	cctx, cancel := context.WithCancel(ctx)
 	go func() {
+		// 事件消费循环必须"接到就立刻释放"，不能在这里同步调 fn()。
+		//
+		// 背景（mac 偶现热键失效 → 重启才恢复 的真正根因）：
+		//   golang.design/x/hotkey 内部的事件管道链是
+		//       主线程 Carbon handler → keydownCallback → hk.keydownIn (unbuffered)
+		//         → newEventChan 中转 goroutine → hk.keydownOut → 这里
+		//
+		//   如果我们在这里同步调 fn()（= togglePanel → wailsruntime.* → 主线程 dispatch_sync），
+		//   期间中转 goroutine 因没人 recv 而阻塞在 `out <-`；
+		//   然后主线程 Carbon handler 再次 fire 时，`keydownIn <- Event{}` 无法
+		//   写入 unbuffered channel —— 主线程就卡在这条 cgo 调用里出不来。
+		//   主线程 runloop 一旦停转，后续所有全局热键、菜单、托盘点击全部失效，
+		//   必须杀进程重启才能恢复。
+		//
+		//   用独立 goroutine 跑 fn() 让本循环始终就绪，就能把整条链路解耦：
+		//     - 中转 goroutine 永远能把事件投进来
+		//     - keydownCallback 的主线程阻塞窗口缩到纳秒级
+		//     - 即使 togglePanel 某次卡住 5 秒也不会波及热键事件流
+		//
+		//   副作用：用户在 fn() 执行中连按同一热键会并发触发多次 togglePanel。
+		//   togglePanel 本身是幂等的（加锁读 windowVisible），最多看到一次多余闪烁，
+		//   远比"整个应用的快捷键死掉"好接受。
 		for {
 			select {
 			case <-cctx.Done():
 				return
 			case <-h.Keydown():
-				fn()
+				go fn()
 			}
 		}
 	}()
@@ -70,7 +99,9 @@ func (m *Manager) Add(ctx context.Context, modifiers []string, key string, fn fu
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.extras = append(m.extras, sub)
+	m.mu.Unlock()
 	return nil
 }
 
@@ -79,11 +110,14 @@ func (m *Manager) Close() error {
 	if m == nil {
 		return nil
 	}
-	// 先关附加项（互不依赖，逐个关，错误丢弃）
-	for _, e := range m.extras {
+	// 先把 extras 切出来再遍历，避免持锁期间长时间关闭 cgo 资源。
+	m.mu.Lock()
+	extras := m.extras
+	m.extras = nil
+	m.mu.Unlock()
+	for _, e := range extras {
 		_ = e.Close()
 	}
-	m.extras = nil
 
 	if m.hotkey == nil {
 		return nil

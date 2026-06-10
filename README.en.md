@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="build/appicon.png" width="120" height="120" alt="GoPaste Logo" />
+<img src="assets/images/icon.png" width="120" height="120" alt="GoPaste Logo" />
 
 # GoPaste
 
@@ -15,14 +15,18 @@
 
 </div>
 
+![](./assets/images/poster.png)
+
 ---
 
 ## ✨ Features
 
 - 🕐 **Auto-record** — Silently monitors your clipboard in the background; supports text, images, links, code snippets, and files
-- ⚡ **Instant access** — Global hotkey <kbd>Alt</kbd> + <kbd>\`</kbd> to summon the panel instantly (customizable)
+- ⚡ **Instant access** — Global hotkey <kbd>Alt</kbd> + <kbd>`</kbd> to summon the panel instantly (customizable)
 - 🔍 **Smart search** — Real-time full-text search with type filtering, find any history item in milliseconds
 - ⭐ **Favorites & Pin** — Mark important items to keep forever; pinned items always stay at the top
+- 📂 **Smart actions** — Context-aware actions based on content type: image→preview/save, file→reveal in explorer, link→open in browser, code→syntax highlighting, all one-click away
+- 😀 **Emoji picker** — Built-in emoji library; click to copy, double-click to paste directly; supports search and skin-tone switching (can be toggled in settings)
 - 🔐 **Local encryption** — All content encrypted with AES-256-GCM; keys stored in the system Keychain — your data never leaves your device
 - 🖥️ **Native cross-platform** — Deep integration with Windows, macOS, and Linux; installer ≤ 20 MB
 - 🎨 **Dual themes** — Switch freely between dark and light mode
@@ -51,18 +55,34 @@ Visit [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) to download
 
 1. Download and launch GoPaste — it will quietly reside in your system tray
 2. Copy anything as usual (text, images, links…) — GoPaste records it automatically
-3. Press <kbd>Alt</kbd> + <kbd>\`</kbd> to open the panel
+3. Press <kbd>Alt</kbd> + <kbd>`</kbd> to open the panel
 4. Search or browse your history, then click any item to paste it into the current app
 
 **Keyboard shortcuts:**
 
-| Key | Action |
-|-----|--------|
-| `Tab` / `Shift+Tab` | Switch content type filter |
+**Global shortcuts (work even when panel is not focused)**
+
+| Shortcut | Action |
+|----------|--------|
+| `Alt` + `` ` `` | Toggle panel |
+| `Alt` + `1` ~ `6` (Windows) / `Cmd` + `1` ~ `6` (Mac) | Switch category tab |
+| `Alt` + `Space` (Windows) | Preview selected item (fallback) |
+
+**In-app shortcuts (when panel is focused)**
+
+| Shortcut | Action |
+|----------|--------|
+| `Tab` / `Shift`+`Tab` | Switch content type (main view) / Switch emoji category (emoji view) |
+| `←` / `→` | Switch content type |
 | `↑` / `↓` | Navigate items |
 | `Enter` | Paste selected item |
-| `Esc` | Close the panel |
-| `Delete` | Delete selected item |
+| `Space` (single press) | Preview / view detail |
+| `Space` (double press) | Primary action (image→save / file→reveal in explorer / link→open in browser) |
+| `Ctrl` + click (Windows) / `Cmd` + click (Mac) | Toggle selection (multiselect、deselect) |
+| `Ctrl` + right-click (Windows) / `Cmd` + right-click (Mac) | Add to selection (context menu) |
+| `Esc` | Close panel / clear selection / exit settings or emoji view |
+| `Delete` / `Backspace` | Delete selected item (supports batch) |
+| Double-click item | Paste (when paste trigger mode is set to "double-click") |
 
 ---
 
@@ -86,6 +106,13 @@ Visit [GitHub Releases](https://github.com/GoPaste/GoPaste/releases) to download
 <summary>Traditional Chinese</summary>
 
 ![Traditional Chinese](./assets/images/settings_zh_tc.png)
+
+</details>
+
+<details>
+<summary>Emoji Picker</summary>
+
+![Emoji Picker](./assets/images/gopaste_emoji.png)
 
 </details>
 
@@ -145,7 +172,7 @@ Issues and Pull Requests are welcome!
 
 - **Bug reports** → [GitHub Issues](https://github.com/GoPaste/GoPaste/issues)
 - **Feature requests** → [GitHub Discussions](https://github.com/GoPaste/GoPaste/discussions)
-- **Developer guide** → See [CONTRIBUTING.md](docs/CONTRIBUTING.md)
+- **Developer guide** → See [CONTRIBUTING.md](docs/CONTRIBUTING.md) (coming soon)
 
 ---
 
