@@ -20,6 +20,11 @@ type Manager struct {
 	hotkey *hk.Hotkey
 	cancel context.CancelFunc
 
+	// regParams 保存注册参数，用于临时注销后的重注册。
+	regModifiers []string
+	regKey       string
+	regFn        func()
+
 	// extras 的读写发生在：
 	//   - Add（app.registerHotkey 启动期 & UpdateSettings 里调用）
 	//   - Close（shutdown & UpdateSettings 重注册前会先关）
@@ -51,6 +56,13 @@ func New(ctx context.Context, modifiers []string, key string, fn func()) (*Manag
 	}
 
 	cctx, cancel := context.WithCancel(ctx)
+	m := &Manager{
+		hotkey:       h,
+		cancel:       cancel,
+		regModifiers: append([]string(nil), modifiers...), // 深拷贝
+		regKey:       key,
+		regFn:        fn,
+	}
 	go func() {
 		// 事件消费循环必须"接到就立刻释放"，不能在这里同步调 fn()。
 		//
@@ -83,7 +95,44 @@ func New(ctx context.Context, modifiers []string, key string, fn func()) (*Manag
 			}
 		}
 	}()
-	return &Manager{hotkey: h, cancel: cancel}, nil
+	return m, nil
+}
+
+// UnregisterTemp 临时注销主热键（不停止 extras）。
+// 用于面板显示时禁用全局热键，避免与输入法组合冲突。
+// 调用 Reregister 可恢复。
+func (m *Manager) UnregisterTemp() {
+	if m == nil || m.hotkey == nil {
+		return
+	}
+	_ = m.hotkey.Unregister()
+}
+
+// Reregister 重新注册主热键（UnregisterTemp 的逆操作）。
+// 使用保存的注册参数重新注册。如果已经注册则先注销再重注册。
+func (m *Manager) Reregister(ctx context.Context) error {
+	if m == nil {
+		return fmt.Errorf("hotkey: nil manager")
+	}
+	if m.regFn == nil {
+		return fmt.Errorf("hotkey: no registration params stored")
+	}
+	// 如果已注册，先注销
+	if m.hotkey != nil {
+		_ = m.hotkey.Unregister()
+		m.cancel()
+	}
+	sub, err := New(ctx, m.regModifiers, m.regKey, m.regFn)
+	if err != nil {
+		return err
+	}
+	m.hotkey = sub.hotkey
+	m.cancel = sub.cancel
+	// extras 需要重新添加
+	m.mu.Lock()
+	m.extras = nil
+	m.mu.Unlock()
+	return nil
 }
 
 // Add 在已有 Manager 上追加注册一个快捷键。

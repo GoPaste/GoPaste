@@ -256,12 +256,16 @@ jobs:
           echo "$FILES"
 
       # ---------- 上传到 Actions Artifact ----------
+      # 仅作为 release job 的中转（创建 Release 后即可丢弃），
+      # 设置 1 天保留期避免撞 GitHub 免费 500MB 存储配额。
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GoPaste-${{ matrix.id }}-${{ env.VERSION }}
           path: build/bin/GoPaste_*_*
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
 
   # ===================================================================
   # Release job: runs ONCE after all builds finish. Downloads every
@@ -308,3 +312,19 @@ jobs:
             --title "$TAG" \
             --notes-file RELEASE_NOTES.md \
             artifacts/*
+
+      # Release 已成功上传到 GitHub Releases（永久存储，不占 Actions 配额），
+      # 此处主动清理 build job 上传的中转 artifacts，彻底避免存储堆积。
+      - name: Delete build artifacts (storage cleanup)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          REPO="${GITHUB_REPOSITORY}"
+          RUN_ID="${GITHUB_RUN_ID}"
+          IDS=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/artifacts" --paginate -q '.artifacts[].id')
+          for id in $IDS; do
+            echo "Deleting artifact $id"
+            gh api -X DELETE "repos/${REPO}/actions/artifacts/${id}" || true
+          done

@@ -285,6 +285,8 @@ function clearKeyword() {
 //   - compositionend  → 解除标记，并手动同步 v-model 与触发一次 refresh
 //     （compositionend 在 Chromium 下 input 事件之前触发，需要主动读 DOM 值）
 const isComposingSearch = ref(false)
+const isComposingGlobal = ref(false)
+let lastCompositionEndTime = 0
 function onSearchCompositionStart() {
   isComposingSearch.value = true
 }
@@ -617,6 +619,11 @@ const ctxMenu = ref<{ visible: boolean; x: number; y: number; item: Item | null 
 
 function onItemContextMenu(e: MouseEvent, it: Item, idx: number) {
   e.preventDefault()
+  // macOS 上 Ctrl+click 被系统映射为右键（会派发 contextmenu），但用户意图是
+  // 多选（由 @click.ctrl 处理）。这里跳过右键菜单，避免干扰多选操作。
+  const isMac = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
+  if (isMac && e.ctrlKey) return
+
   selectedIdx.value = idx
   // 普通右键：
   //   - 如果条目已在多选集合中，保持多选状态
@@ -626,12 +633,17 @@ function onItemContextMenu(e: MouseEvent, it: Item, idx: number) {
     selectedIds.value = [it.id]
   }
   ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, item: it }
+  nextTick(adjustMenuPosition)
 }
 
 // Ctrl/Meta + 右键：切换该条目的选中状态，不清空已有选择
 // 由模板 @contextmenu.ctrl / @contextmenu.meta 触发
 function onItemContextMenuCtrl(e: MouseEvent, it: Item, idx: number) {
   e.preventDefault()
+  // macOS 上 Ctrl+click 被系统映射为右键，会触发 @contextmenu.ctrl，
+  // 但用户意图是多选（由 @click.ctrl 处理）。跳过避免干扰多选操作。
+  const isMac = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
+  if (isMac && e.ctrlKey) return
   selectedIdx.value = idx
   if (selectedIds.value.includes(it.id)) {
     selectedIds.value = selectedIds.value.filter(id => id !== it.id)
@@ -639,20 +651,27 @@ function onItemContextMenuCtrl(e: MouseEvent, it: Item, idx: number) {
     selectedIds.value = [...selectedIds.value, it.id]
   }
   ctxMenu.value = { visible: true, x: e.clientX, y: e.clientY, item: it }
+  nextTick(adjustMenuPosition)
 }
 function closeCtxMenu() { ctxMenu.value.visible = false }
 
-// 菜单定位：确保不超出窗口边界
-const ctxMenuStyle = computed(() => {
-  const menuW = 180, menuH = 300
-  let x = ctxMenu.value.x
-  let y = ctxMenu.value.y
-  if (x + menuW > window.innerWidth) x = window.innerWidth - menuW - 4
-  if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 4
-  if (x < 0) x = 4
-  if (y < 0) y = 4
-  return { left: x + 'px', top: y + 'px' }
-})
+// 菜单定位：先按点击位置放置，nextTick 里根据实际渲染尺寸再做边界修正
+const ctxMenuEl = ref<HTMLElement | null>(null)
+const ctxMenuStyle = computed(() => ({
+  left: ctxMenu.value.x + 'px',
+  top: ctxMenu.value.y + 'px',
+}))
+function adjustMenuPosition() {
+  if (!ctxMenuEl.value) return
+  const rect = ctxMenuEl.value.getBoundingClientRect()
+  let { x, y } = ctxMenu.value
+  let changed = false
+  if (x + rect.width > window.innerWidth)  { x = Math.max(4, window.innerWidth - rect.width - 4); changed = true }
+  if (y + rect.height > window.innerHeight) { y = Math.max(4, window.innerHeight - rect.height - 4); changed = true }
+  if (x < 0) { x = 4; changed = true }
+  if (y < 0) { y = 4; changed = true }
+  if (changed) ctxMenu.value = { ...ctxMenu.value, x, y }
+}
 
 async function ctxCopy() { if (ctxMenu.value.item) await doCopy(ctxMenu.value.item); closeCtxMenu() }
 async function ctxPaste() { if (ctxMenu.value.item) await doPaste(ctxMenu.value.item); closeCtxMenu() }
@@ -891,7 +910,7 @@ function onKeyDown(e: KeyboardEvent) {
   const tabKeyPressed = isMacPlatform
     ? (e.metaKey && !e.ctrlKey && !e.altKey)
     : (e.altKey && !e.ctrlKey && !e.metaKey)
-  if (tabHotkeysEnabled.value && tabKeyPressed && !e.isComposing) {
+  if (tabHotkeysEnabled.value && tabKeyPressed && !e.isComposing && !isComposingGlobal.value && (lastCompositionEndTime === 0 || Date.now() - lastCompositionEndTime > 200)) {
     if (/^[1-6]$/.test(e.key)) {
       const n = parseInt(e.key, 10)
       if (n < typeOptions.value.length) {
@@ -981,9 +1000,12 @@ function onKeyDown(e: KeyboardEvent) {
         showDetail(it)
       }, SPACE_DBLCLICK_THRESHOLD_MS)
     }
-  } else if (e.key === 'Enter' && selected.value && !e.isComposing) {
-    // e.isComposing：输入法正在组合（如中文拼音未确认），此时 Enter 只应确认输入法候选词，
-    // 不应触发 GoPaste 的粘贴/执行动作。
+  } else if (e.key === 'Enter' && selected.value && !e.isComposing && !isComposingGlobal.value && (lastCompositionEndTime === 0 || Date.now() - lastCompositionEndTime > 200)) {
+    // 输入法正在组合时，Enter 只应确认输入法候选词，不应触发 GoPaste 的粘贴/执行动作。
+    // 三重保险：
+    //   1. e.isComposing（浏览器原生标志，某些输入法不可靠）
+    //   2. isComposingGlobal（ref 追踪，compositionstart/end 时更新）
+    //   3. lastCompositionEndTime（时间戳，compositionend 后 200ms 内的 Enter 视为确认组合）
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
     if (detailVisible.value) detailVisible.value = false
@@ -1015,10 +1037,14 @@ onMounted(async () => {
   document.documentElement.setAttribute('data-os', isMac ? 'mac' : 'other')
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('compositionstart', () => {
-    (window as any).go?.main.App.SetIsComposing(true)
+    isComposingGlobal.value = true
+    lastCompositionEndTime = 0
+    ;(window as any).go?.main.App.SetIsComposing(true)
   })
   window.addEventListener('compositionend', () => {
-    (window as any).go?.main.App.SetIsComposing(false)
+    isComposingGlobal.value = false
+    lastCompositionEndTime = Date.now()
+    ;(window as any).go?.main.App.SetIsComposing(false)
   })
   window.addEventListener('blur', onWindowBlur)
   window.addEventListener('resize', syncWebViewBg)
@@ -1442,7 +1468,7 @@ function showEmojiToast(msg: string) {
     <!-- 右键菜单 -->
     <Transition name="fade">
       <div v-if="ctxMenu.visible" class="ctx-mask" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu">
-        <div class="ctx-menu" :style="ctxMenuStyle" @click.stop>
+        <div ref="ctxMenuEl" class="ctx-menu" :style="ctxMenuStyle" @click.stop>
           <!-- 多选状态下只显示批量删除，避免歧义 -->
           <template v-if="selectedIds.length > 1">
             <button class="ctx-danger" @click="ctxDelete"><Trash2 :size="14" /> {{ t('batchDelete') }}</button>
