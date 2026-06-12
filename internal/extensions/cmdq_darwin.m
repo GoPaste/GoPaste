@@ -25,9 +25,11 @@
 //   L2) NSEvent addLocalMonitorForEventsMatchingMask:
 //       第二保险兜底。
 //
-// 关键点：confirm 模式"第二次按下要真正退出"——不要自己调 terminate:，
-// 而是 *让事件原路继续派发*（L0 返回原 event / L1 调原始 sendEvent:）。
-// 这样事件会被系统的 menu keyEquivalent 机制解析为 Quit，走默认路径。
+// 关键点：confirm 模式"第二次按下要真正退出"——必须由我们自己显式调用
+// [NSApp terminate:nil]，而不是依赖菜单 keyEquivalent。
+// 原因：Wails 应用没有自带带 ⌘Q keyEquivalent 的 "Quit" 菜单项，
+// 因此把事件原样放行后没有任何 responder 会处理它，结果就是"按两次也不退出"。
+// 显式 terminate 同时把事件吞掉（return YES / return NULL），避免事件继续传播。
 
 #import <Cocoa/Cocoa.h>
 #import <AppKit/AppKit.h>
@@ -96,9 +98,17 @@ extern void GoPasteCmdQNotify(char *reason);
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         NSTimeInterval windowSec = (NSTimeInterval)self.confirmWindowMs / 1000.0;
         if (self.lastPressTs > 0 && (now - self.lastPressTs) <= windowSec) {
-            // 第二次按下且仍在窗口内 → 放行，让系统走默认菜单路径退出。
+            // 第二次按下且仍在窗口内 → 主动 terminate。
+            // 不能依赖"放行让菜单 keyEquivalent 处理"——Wails App 没有带
+            // ⌘Q 的 Quit 菜单项，原样放行不会触发任何退出。
             self.lastPressTs = 0;
-            return NO;
+            GoPasteCmdQNotify((char *)(fromTap ? "confirm-second-global" : "confirm-second"));
+            // 切回主线程异步 terminate，避免在 tap callback / sendEvent 调用栈里
+            // 直接退出导致的清理时序问题。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [NSApp terminate:nil];
+            });
+            return YES;  // 吞掉这次按键事件本身（terminate 由上面的 block 触发）
         }
         // 首次按下 → 记录时间戳，通知 toast，然后吞掉这次按键。
         self.lastPressTs = now;

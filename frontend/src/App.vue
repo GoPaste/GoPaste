@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import hljs from 'highlight.js/lib/common'
 // 默认使用 github-dark（与深色背景匹配）；浅色模式下在 CSS 里作用域覆盖为 GitHub 浅色调色板。
 // 原先用的 github.css 是浅色主题，在深色背景上字符串等 token 几乎不可见。
@@ -97,7 +97,7 @@ const keyword = ref('')
 const emojiKeyword = ref('')
 const typeFilter = ref<ItemType>('')
 const favoriteOnly = ref(false)
-const selectedIdx = ref(0)
+const selectedIdx = ref(-1)
 // Ctrl/Meta 键状态跟踪（用于窗口失焦时重置）
 const ctrlPressed = ref(false)
 const detailContent = ref<string>('')
@@ -181,6 +181,10 @@ const selectedItems = computed<Item[]>(() =>
   items.value.filter(it => selectedIds.value.includes(it.id))
 )
 const selectedCount = computed(() => selectedIds.value.length)
+// 状态栏显示的选中数：多选时用 selectedIds 数量，否则 selectedIdx 有效时视为1条
+const displaySelectedCount = computed(() =>
+  selectedIds.value.length > 0 ? selectedIds.value.length : (selectedIdx.value !== -1 ? 1 : 0)
+)
 
 function isSelected(it: Item): boolean {
   return selectedIds.value.includes(it.id)
@@ -214,6 +218,15 @@ function onItemClick(idx: number, it: Item, e?: MouseEvent) {
 // Ctrl/Meta + 点击：切换该条目选中状态（支持反选）
 // 由模板 @click.ctrl / @click.meta 触发，Vue 内置修饰符最可靠
 function onItemCtrlClick(idx: number, it: Item) {
+  // 若当前有键盘焦点项（selectedIdx 指向某条目）但它尚未在 selectedIds 中，
+  // 先将其补入，避免"首条只有 active 高亮却不在多选集合"的视觉/逻辑不一致。
+  if (selectedIdx.value !== -1 && selectedIdx.value !== idx) {
+    const focusedItem = items.value[selectedIdx.value]
+    if (focusedItem && !selectedIds.value.includes(focusedItem.id)) {
+      selectedIds.value = [...selectedIds.value, focusedItem.id]
+    }
+  }
+
   if (selectedIds.value.includes(it.id)) {
     selectedIds.value = selectedIds.value.filter(id => id !== it.id)
     // 反选后如果没有其他选中项，清除 active 状态
@@ -251,7 +264,7 @@ async function refresh(opts?: { silent?: boolean }) {
     } as any)
     items.value = (r?.items || []) as Item[]
     total.value = r?.total || 0
-    if (selectedIdx.value >= items.value.length) selectedIdx.value = 0
+    if (selectedIdx.value >= items.value.length) selectedIdx.value = -1
     loadThumbs(items.value)
   } finally {
     if (!silent) loading.value = false
@@ -448,6 +461,9 @@ async function doCopy(it: Item) { await CopyToClipboard(it.id) }
 
 // 粘贴触发方式：'single' 单击立即粘贴 | 'double' 双击粘贴（默认，单击仅选中）
 const pasteTrigger = ref<'single' | 'double'>('double')
+// 呼出快捷键配置（从设置同步），用于前端拦截防止字符写入搜索框
+const hotkeyKey = ref('`')
+const hotkeyModifiers = ref<string[]>(['alt'])
 // 是否启用 Alt+1..6 全局/应用内切分类热键。后端配置同名字段镜像，关闭后两端一并生效。
 const tabHotkeysEnabled = ref(true)
 // Emoji 功能总开关（默认开启）。
@@ -706,6 +722,29 @@ const alwaysOnTop = ref(false)
 // 用 counter 而非 bool，允许多个异步原生对话框嵌套（虽然当前只有一个）。
 const suppressBlurHide = ref(0)
 
+// 提供给子组件（如 Settings.vue）使用：某些后端调用会副作用性地把其它
+// 进程（例如「系统设置」）拉到前台，导致主面板失去 key window 状态进而
+// 被 onWindowBlur 自动 HideWindow。子组件在已知会触发此类副作用的操作
+// 前后用 withSuppressBlur 包一下，可以保护主面板不被自动隐藏。
+function withSuppressBlur<T>(fn: () => T | Promise<T>, ms = 800): Promise<T> {
+  suppressBlurHide.value++
+  const release = () => {
+    setTimeout(() => { suppressBlurHide.value = Math.max(0, suppressBlurHide.value - 1) }, ms)
+  }
+  try {
+    const r = fn()
+    if (r instanceof Promise) {
+      return r.finally(release)
+    }
+    release()
+    return Promise.resolve(r)
+  } catch (e) {
+    release()
+    return Promise.reject(e)
+  }
+}
+provide('suppressBlurHide', { withSuppressBlur })
+
 function toggleAlwaysOnTop() {
   alwaysOnTop.value = !alwaysOnTop.value
   WindowSetAlwaysOnTop(alwaysOnTop.value)
@@ -736,6 +775,8 @@ async function loadSettings() {
     applyTheme(s?.theme || 'dark')
     if (s?.language) lang.value = s.language as Lang
     pasteTrigger.value = (s?.pasteTrigger === 'single' ? 'single' : 'double')
+    if (s?.hotkeyKey) hotkeyKey.value = s.hotkeyKey
+    if (Array.isArray(s?.hotkeyModifiers)) hotkeyModifiers.value = s.hotkeyModifiers
     tabHotkeysEnabled.value = s?.tabHotkeysEnabled !== false // 缺失/旧配置默认 true
     emojiEnabled.value = s?.emojiEnabled !== false           // 缺失/旧配置默认 true
     extendedEmoji.value = !!s?.extendedEmoji
@@ -808,11 +849,11 @@ async function onWindowShow() {
     selectedIdx.value = 0
     // 先滚动到顶部
     listRef.value?.scrollTo({ top: 0 })
-    // 清除多选状态后，选中首条（让状态栏显示"已选中1条"）
+    // 清除多选状态，仅用 selectedIdx 表示键盘焦点，不写入 selectedIds
     clearSelection()
-    if (items.value.length > 0) {
-      selectedIds.value = [items.value[0].id]
-    }
+  } else {
+    // 不回到顶部时，保留上次的选中状态：
+    // 上次有选中 → 继续保留；上次没选中 → 维持无选中
   }
   // 聚焦搜索框
   searchRef.value?.focus()
@@ -856,6 +897,24 @@ function switchFilterByIndex(idx: number) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  // 呼出快捷键拦截：窗口激活时按下与呼出相同的快捷键 → 隐藏窗口。
+  // 必须放在最顶部：阻止字符（如 `）写入搜索框，并直接隐藏，不走后续逻辑。
+  // 匹配规则：key 忽略大小写，modifiers 全部命中。
+  if (!e.isComposing && !isComposingGlobal.value) {
+    const mods = hotkeyModifiers.value.map(m => m.toLowerCase())
+    const keyMatch = e.key.toLowerCase() === hotkeyKey.value.toLowerCase()
+    const altMatch  = mods.includes('alt')   ? e.altKey   : !e.altKey
+    const ctrlMatch = mods.includes('ctrl')  ? e.ctrlKey  : !e.ctrlKey
+    const metaMatch = mods.includes('meta') || mods.includes('cmd') ? e.metaKey : !e.metaKey
+    const shiftMatch = mods.includes('shift') ? e.shiftKey : !e.shiftKey
+    if (keyMatch && altMatch && ctrlMatch && metaMatch && shiftMatch) {
+      e.preventDefault()
+      e.stopPropagation()
+      HideWindow()
+      return
+    }
+  }
+
   // 确认弹窗显示期间：仅响应 Enter（确认）/ Esc（取消），其它键一律拦截，
   // 避免：按 Enter 既弹框又触发 doPaste；按 Backspace 在弹框开启时再次触发 doDelete
   // 造成弹框叠压；按空格触发预览/专属操作等。
@@ -1009,7 +1068,10 @@ function onKeyDown(e: KeyboardEvent) {
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
     if (detailVisible.value) detailVisible.value = false
-    else if (selectedIds.value.length > 0) clearSelection()
+    else if (selectedIds.value.length > 0 || selectedIdx.value !== -1) {
+      clearSelection()
+      selectedIdx.value = -1
+    }
     else HideWindow()
   } else if ((e.key === 'Delete' || e.key === 'Backspace') && !searchHasValue && (selected.value || selectedIds.value.length > 0)) {
     // 删除选中项：
@@ -1415,7 +1477,7 @@ function showEmojiToast(msg: string) {
       </Transition>
 
       <footer v-if="view === 'main'" class="statusbar">
-        <span v-if="selectedCount > 0">{{ t('selectedCount', { n: selectedCount }) }} | {{ total }} {{ t('records') }}</span>
+        <span v-if="displaySelectedCount > 0">{{ t('selectedCount', { n: displaySelectedCount }) }} | {{ total }} {{ t('records') }}</span>
         <span v-else>{{ total }} {{ t('records') }}</span>
         <span class="dim">{{ t('statusHint') }}</span>
       </footer>

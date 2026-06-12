@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   GetSettings,
   UpdateSettings,
@@ -22,6 +22,13 @@ import { t, lang } from '../i18n'
 import type { Lang } from '../i18n'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+// 父组件 App.vue 提供：在已知会副作用性地把其它进程（如「系统设置」）
+// 拉到前台、从而触发主面板 onWindowBlur 自动隐藏的操作前后，包一层即可
+// 在窗口失焦的短暂时间窗内禁用自动隐藏。
+// 详见 App.vue 中 withSuppressBlur 的定义注释，以及本文件 cmdQBehavior
+// 切换 watcher 的注释。
+const blurGuard = inject<{ withSuppressBlur: <T>(fn: () => T | Promise<T>, ms?: number) => Promise<T> } | null>('suppressBlurHide', null)
 
 type Tab = 'general' | 'clipboard' | 'shortcut' | 'backup' | 'extensions' | 'about'
 const activeTab = ref<Tab>('general')
@@ -265,8 +272,23 @@ watchImmediate(() => form.emojiEnabled)
 watchImmediate(() => form.extendedEmoji)
 watchImmediate(() => form.hotkeyKey)
 watchImmediate(() => form.hotkeyModifiers.join('+'))
-// 扩展功能：Cmd+Q 策略切换即写盘；时间窗用 number 输入的 blur 触发
-watchImmediate(() => form.cmdQBehavior)
+// 扩展功能：Cmd+Q 策略切换即写盘；时间窗用 number 输入的 blur 触发。
+//
+// 注意：在 macOS 上，把策略切到 confirm/disable 时，后端会尝试启用 L0
+// 全局拦截（CGEventTap）。若用户尚未授予「输入监控」权限，后端可能会
+// OpenInputMonitoringPrefs() 把「系统设置」拉到前台 —— 这会让 GoPaste
+// 主面板失去 key window 状态，触发 App.vue 的 onWindowBlur 自动 HideWindow。
+// 用户感知是"来回切几下按钮，主界面突然消失了"。
+// 这里用 blurGuard 在切换前后压住自动隐藏一段时间窗作为前端兜底；
+// 后端也已做"进程内仅引导一次"去重（见 app.go cmdQTapPermGuideOnce）。
+watch(() => form.cmdQBehavior, () => {
+  if (!loaded.value) return
+  if (blurGuard) {
+    blurGuard.withSuppressBlur(() => autoSave(), 1200)
+  } else {
+    autoSave()
+  }
+})
 // 注意：form.maxItems / form.maxDays / form.cmdQConfirmWindow 不使用 watch，
 // 改为输入框 blur/回车时触发保存
 

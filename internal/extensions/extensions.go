@@ -38,6 +38,8 @@ func NormalizeCmdQBehavior(v string) CmdQBehavior {
 // reason 取值：
 //   - "confirm-first"          L1 首次按下（仅 GoPaste 自身前台）
 //   - "confirm-first-global"   L0 首次按下（全局，可能前台是其他 App）
+//   - "confirm-second"         L1 二次确认命中（即将 terminate）
+//   - "confirm-second-global"  L0 二次确认命中（即将 terminate）
 //   - "confirm-timeout"        确认窗口超时失效
 //   - "disabled"               L1 disable 被按下
 //   - "disabled-global"        L0 disable 被按下

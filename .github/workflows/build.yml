@@ -10,7 +10,48 @@ permissions:
   contents: write
 
 jobs:
+  # ===================================================================
+  # create-release: 提前创建（或重建）空 Release，供各 build job 直接上传。
+  # 只在 tag push 时运行；workflow_dispatch 时跳过（无 tag，无需 release）。
+  # ===================================================================
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Delete existing Release (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
+
+      - name: Create empty Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          NOTES_FILE="changelog/release_notes_v${VERSION}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              --draft=false
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "" \
+              --draft=false
+          fi
+
   build:
+    # tag push 时等待 release 创建完成；workflow_dispatch 时直接运行
+    needs: [create-release]
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -240,91 +281,22 @@ jobs:
           echo "TARBALL=$TARBALL" >> $GITHUB_ENV
           ls -la
 
-      # ---------- 收集要上传的文件清单 ----------
-      - name: Collect artifacts
+      # ---------- 直接上传到 GitHub Release（仅 tag push）----------
+      # 跳过 Actions Artifact 中转，避免触碰 500MB 存储配额。
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -e
+          TAG="${GITHUB_REF#refs/tags/}"
           cd build/bin
-          # 仅收集规范命名的产物，避免任何残留被上传
           FILES=$(ls GoPaste_*_* 2>/dev/null || true)
           if [ -z "$FILES" ]; then
             echo "::error::No artifacts matched GoPaste_*_*"
             exit 1
           fi
-          echo "Files to upload:"
+          echo "Uploading to release $TAG:"
           echo "$FILES"
-
-      # ---------- 上传到 Actions Artifact ----------
-      # 仅作为 release job 的中转（创建 Release 后即可丢弃），
-      # 设置 1 天保留期避免撞 GitHub 免费 500MB 存储配额。
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GoPaste-${{ matrix.id }}-${{ env.VERSION }}
-          path: build/bin/GoPaste_*_*
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-
-  # ===================================================================
-  # Release job: runs ONCE after all builds finish. Downloads every
-  # artifact and creates a GitHub Release with RELEASE_NOTES.md as body.
-  #
-  # Why a file instead of tag annotation?
-  # - actions/checkout doesn't reliably fetch annotated tag objects
-  # - git for-each-ref %(contents) strips the first line as "subject"
-  # - gh release create uses commit message as fallback when notes empty
-  # A committed RELEASE_NOTES.md is always present and trivial to read.
-  # ===================================================================
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: GoPaste-*
-          merge-multiple: true
-
-      - name: List downloaded files
-        run: ls -la artifacts/
-
-      - name: Delete existing Release (if any)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
-
-      - name: Create Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file RELEASE_NOTES.md \
-            artifacts/*
-
-      # Release 已成功上传到 GitHub Releases（永久存储，不占 Actions 配额），
-      # 此处主动清理 build job 上传的中转 artifacts，彻底避免存储堆积。
-      - name: Delete build artifacts (storage cleanup)
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          REPO="${GITHUB_REPOSITORY}"
-          RUN_ID="${GITHUB_RUN_ID}"
-          IDS=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/artifacts" --paginate -q '.artifacts[].id')
-          for id in $IDS; do
-            echo "Deleting artifact $id"
-            gh api -X DELETE "repos/${REPO}/actions/artifacts/${id}" || true
-          done
+          gh release upload "$TAG" $FILES --clobber

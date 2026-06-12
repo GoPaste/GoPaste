@@ -88,6 +88,15 @@ type App struct {
 	// macOS 辅助功能权限引导对话框去重：进程内只弹一次。
 	// 详见 showAccessibilityGuide() 的注释。
 	accessGuideOnce sync.Once
+
+	// macOS Cmd+Q 全局拦截（L0 CGEventTap）需要"输入监控"权限。
+	// 用户在"扩展功能"里来回切换三个按钮（立即退出/二次确认/禁用退出）时，
+	// 每次切到 confirm/disable 都会调一次 applyCmdQGlobalTap：
+	// 若权限未授予，原实现每次都会 OpenInputMonitoringPrefs() 把
+	// 「系统设置」窗口拉到前台，GoPaste 主面板因失去 key window 状态
+	// 而被 onWindowBlur 自动 HideWindow——观感上就是"主界面隐藏了"。
+	// 这里用 sync.Once 保证进程内只引导一次，后续切换静默降级到 L1。
+	cmdQTapPermGuideOnce sync.Once
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
@@ -312,10 +321,8 @@ func (a *App) domReady(ctx context.Context) {
 				// 稍等 NSPanel 完全显示后再激活，避免时序问题
 				time.Sleep(200 * time.Millisecond)
 				window.ActivateForDialog()
-				a.setVisible(true)
-				// 面板显示时注销全局热键，避免与输入法组合冲突
-				a.suspendHotkeys()
-				// 冷启动首次点击无效问题：
+			a.setVisible(true)
+			// 冷启动首次点击无效问题：
 				// 之前这里会立刻调 DeactivateAfterDialog() 让 app 回到非激活
 				// 状态（保持"不抢前台"的 NonactivatingPanel 语义）。但副作用是
 				// AppKit 把"非激活 app 上的第一次点击"当成激活事件吞掉——用户
@@ -327,12 +334,10 @@ func (a *App) domReady(ctx context.Context) {
 				bootProbeApp("domReady: cold-start mac focus done")
 			}()
 		} else if runtime.GOOS == "windows" {
-			window.ShowMain(a.ctx)
-			a.setVisible(true)
-			// 面板显示时注销全局热键，避免与输入法组合冲突
-			a.suspendHotkeys()
-			wailsruntime.EventsEmit(a.ctx, "window:show")
-			bootProbeApp("domReady: cold-start windows ShowMain done")
+		window.ShowMain(a.ctx)
+		a.setVisible(true)
+		wailsruntime.EventsEmit(a.ctx, "window:show")
+		bootProbeApp("domReady: cold-start windows ShowMain done")
 		}
 	}
 }
@@ -658,12 +663,10 @@ func (a *App) togglePanel() {
 		window.ShowMain(a.ctx)
 		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
-		a.setVisible(true)
-		// 面板显示时注销全局热键，避免与输入法组合冲突
-		a.suspendHotkeys()
-		bootProbeApp("togglePanel: before EventsEmit window:show")
-		wailsruntime.EventsEmit(a.ctx, "window:show")
-		bootProbeApp("togglePanel: emit done (minimised path)")
+			a.setVisible(true)
+			bootProbeApp("togglePanel: before EventsEmit window:show")
+			wailsruntime.EventsEmit(a.ctx, "window:show")
+			bootProbeApp("togglePanel: emit done (minimised path)")
 		return
 	}
 	a.visMu.Lock()
@@ -675,8 +678,6 @@ func (a *App) togglePanel() {
 		a.saveWindowPosition()
 		window.HideMain(a.ctx)
 		a.setVisible(false)
-		// 面板隐藏时重注册全局热键，恢复全局唤起能力
-		a.resumeHotkeys()
 		bootProbeApp("togglePanel: hide done")
 	} else {
 		bootProbeApp("togglePanel: show path")
@@ -686,8 +687,6 @@ func (a *App) togglePanel() {
 		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
 		a.setVisible(true)
-		// 面板显示时注销全局热键，避免与输入法组合冲突
-		a.suspendHotkeys()
 		// 通知前端窗口已显示，触发"激活时回到顶部 / 切换至全部分组"等逻辑。
 		// Windows 上 visibilitychange 不一定由 WindowShow 触发，所以需要显式 emit。
 		bootProbeApp("togglePanel: before EventsEmit window:show")
@@ -723,27 +722,7 @@ func (a *App) showPanel() {
 	window.ShowMain(a.ctx)
 	a.positionWindow()
 	a.setVisible(true)
-	// 面板显示时注销全局热键，避免与输入法组合冲突
-	a.suspendHotkeys()
 	wailsruntime.EventsEmit(a.ctx, "window:show")
-}
-
-// suspendHotkeys 临时注销全局热键（面板显示时调用）。
-// 避免全局热键与输入法组合状态冲突（如中文输入法按 Enter 同时触发热键）。
-func (a *App) suspendHotkeys() {
-	if a.hotkey != nil {
-		_ = a.hotkey.Close()
-		a.hotkey = nil
-	}
-}
-
-// resumeHotkeys 恢复全局热键（面板隐藏时调用）。
-// 仅当热键处于挂起状态（a.hotkey == nil）时才重注册，避免重复注册。
-func (a *App) resumeHotkeys() {
-	if a.hotkey != nil {
-		return // 热键仍激活中，无需重注册
-	}
-	a.registerHotkey()
 }
 
 // captureFocusBeforeShow 在窗口显示前抓住当前前台窗口，便于稍后粘贴时还原焦点。
@@ -1130,11 +1109,9 @@ func (a *App) pasteClipboardToFront(probeTag string) error {
 		if a.ctx != nil && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("PasteItem: before HideMain (mac/panel)")
-			window.HideMain(a.ctx)
-			a.setVisible(false)
-			// 面板隐藏时重注册全局热键
-			a.resumeHotkeys()
-			bootProbeApp("PasteItem: after HideMain (mac/panel)")
+		window.HideMain(a.ctx)
+		a.setVisible(false)
+		bootProbeApp("PasteItem: after HideMain (mac/panel)")
 		} else {
 			bootProbeApp("PasteItem: skip HideMain (already hidden)")
 		}
@@ -1150,11 +1127,9 @@ func (a *App) pasteClipboardToFront(probeTag string) error {
 		if a.ctx != nil && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("PasteItem: before WindowHide")
-			wailsruntime.WindowHide(a.ctx)
-			bootProbeApp("PasteItem: after WindowHide")
-			a.setVisible(false)
-			// 面板隐藏时重注册全局热键
-			a.resumeHotkeys()
+		wailsruntime.WindowHide(a.ctx)
+		bootProbeApp("PasteItem: after WindowHide")
+		a.setVisible(false)
 		} else {
 			bootProbeApp("PasteItem: skip WindowHide (already hidden)")
 		}
@@ -1235,8 +1210,6 @@ func (a *App) HideWindow() {
 		a.saveWindowPosition()
 		window.HideMain(a.ctx)
 		a.setVisible(false)
-		// 面板隐藏时重注册全局热键
-		a.resumeHotkeys()
 	}
 }
 
@@ -1248,8 +1221,10 @@ func (a *App) QuitApp() {
 // onCmdQIntercepted 当 macOS Cmd+Q 被"扩展功能"拦截时，由 extensions 包调用。
 // reason 取值：
 //   - "confirm-first"   ：第一次按下 Cmd+Q，进入确认窗口，前端应提示"再按一次 Cmd+Q 退出"
+//   - "confirm-second"  ：二次确认命中，即将 terminate（前端可不处理）
 //   - "confirm-timeout" ：确认窗口已过期，前端应隐藏提示
 //   - "disabled"        ：当前策略为禁用，前端提示"Cmd+Q 已禁用"
+//   （以上 reason 可能带 "-global" 后缀，表示来自 L0 全局拦截）
 //
 // 这里只负责把事件 emit 给前端，toast 样式在 App.vue 中处理。
 func (a *App) onCmdQIntercepted(reason string) {
@@ -1296,19 +1271,28 @@ func (a *App) applyCmdQGlobalTap(b extensions.CmdQBehavior) {
 			}
 		}
 		// 首次弹窗在进程生命周期内生效不可靠（用户常需勾选后重启 App），
-		// 打开系统设置页引导 + 前端 toast 提示。
-		extensions.OpenInputMonitoringPrefs()
-		if a.ctx != nil {
-			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", "unknown")
-		}
+		// 引导一次系统设置页 + 前端 toast 提示。
+		// 注意：仅进程内首次需要权限时引导；否则用户在 Settings 面板里
+		// 来回点三个按钮，每次都会把"系统设置"拉到前台，把 GoPaste
+		// 主面板挤到后台 → 触发 onWindowBlur 自动隐藏。
+		a.guideCmdQTapPermissionOnce("unknown")
 		a.log.Warn("cmdq: L0 tap needs input-monitoring permission, fallback to L1")
 	case extensions.TapAuthDenied:
-		extensions.OpenInputMonitoringPrefs()
-		if a.ctx != nil {
-			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", "denied")
-		}
+		a.guideCmdQTapPermissionOnce("denied")
 		a.log.Warn("cmdq: L0 tap denied by user, fallback to L1")
 	}
+}
+
+// guideCmdQTapPermissionOnce 在进程生命周期内最多引导用户一次去授予
+// "输入监控"权限：打开系统设置页 + 通知前端弹 toast。
+// 设计动机见 App.cmdQTapPermGuideOnce 的注释。
+func (a *App) guideCmdQTapPermissionOnce(reason string) {
+	a.cmdQTapPermGuideOnce.Do(func() {
+		extensions.OpenInputMonitoringPrefs()
+		if a.ctx != nil {
+			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", reason)
+		}
+	})
 }
 
 // GetSettings 返回当前偏好设置。
@@ -1328,8 +1312,6 @@ func (a *App) UpdateSettings(ns settings.Settings) error {
 	if err := a.settings.Set(ns); err != nil {
 		return err
 	}
-	// 仅当热键未挂起时才重注册；若面板正在显示（热键已注销），
-	// 留待面板隐藏时 resumeHotkeys 一并应用新设置。
 	if a.hotkey != nil {
 		a.registerHotkey()
 	}
