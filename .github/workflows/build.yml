@@ -201,14 +201,16 @@ jobs:
         run: |
           set -euxo pipefail
           command -v makensis
-          wails build -clean -platform ${{ matrix.platform }} -nsis
+          wails build -clean -platform ${{ matrix.platform }} -nsis \
+            -ldflags "-s -w -X gopaste/internal/updater.Version=${VERSION}"
 
       - name: Build
         if: matrix.nsis != 'yes'
         shell: bash
         run: |
           set -euxo pipefail
-          wails build -clean -platform ${{ matrix.platform }}
+          wails build -clean -platform ${{ matrix.platform }} \
+            -ldflags "-s -w -X gopaste/internal/updater.Version=${VERSION}"
 
       - name: List build output
         shell: bash
