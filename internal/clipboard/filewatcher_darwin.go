@@ -270,6 +270,47 @@ int pasteboardWriteImagePNG(const void *bytes, unsigned long n) {
     });
     return rc;
 }
+
+// pasteboardWriteFileURLs 串行化把 POSIX 路径列表写为 NSPasteboard 文件 URL 列表。
+// paths 为换行（\n）分隔的 UTF-8 路径字符串，n 为字节数。
+// 使用 writeObjects: 写入 NSURL 数组，使文件管理器/支持拖放的应用能直接粘贴文件。
+// 写之前 clearContents。返回 0 成功 / -1 失败。
+int pasteboardWriteFileURLs(const char *paths, unsigned long n) {
+    __block int rc = -1;
+    dispatch_sync(pasteboardQueue(), ^{
+        @autoreleasepool {
+            if (paths == NULL || n == 0) {
+                rc = -1;
+                return;
+            }
+            NSString *joined = [[NSString alloc] initWithBytes:paths
+                                                        length:(NSUInteger)n
+                                                      encoding:NSUTF8StringEncoding];
+            if (!joined) {
+                rc = -1;
+                return;
+            }
+            NSArray<NSString *> *lines = [joined componentsSeparatedByString:@"\n"];
+            NSMutableArray<NSURL *> *urls = [NSMutableArray arrayWithCapacity:lines.count];
+            for (NSString *line in lines) {
+                NSString *trimmed = [line stringByTrimmingCharactersInSet:
+                                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (trimmed.length == 0) continue;
+                NSURL *url = [NSURL fileURLWithPath:trimmed];
+                if (url) [urls addObject:url];
+            }
+            if (urls.count == 0) {
+                rc = -1;
+                return;
+            }
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            [pb clearContents];
+            BOOL ok = [pb writeObjects:urls];
+            rc = ok ? 0 : -1;
+        }
+    });
+    return rc;
+}
 */
 import "C"
 import (
@@ -434,6 +475,24 @@ func writeClipboardImagePNGGo(b []byte) error {
 		p = unsafe.Pointer(&b[0])
 	}
 	if rc := C.pasteboardWriteImagePNG(p, C.ulong(len(b))); rc != 0 {
+		return errClipboardWrite
+	}
+	return nil
+}
+
+// writeClipboardFileURLsGo 串行化把 POSIX 路径列表写为 NSPasteboard 文件 URL 列表。
+// 走 pasteboardQueue 串行化，与其他 watcher 访问不冲突。
+func writeClipboardFileURLsGo(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	joined := strings.Join(paths, "\n")
+	b := []byte(joined)
+	var p unsafe.Pointer
+	if len(b) > 0 {
+		p = unsafe.Pointer(&b[0])
+	}
+	if rc := C.pasteboardWriteFileURLs((*C.char)(p), C.ulong(len(b))); rc != 0 {
 		return errClipboardWrite
 	}
 	return nil

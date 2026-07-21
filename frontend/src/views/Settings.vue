@@ -5,6 +5,7 @@ import {
   UpdateSettings,
   ExportData,
   ExportDataToFile,
+  ExportDiagnostics,
   ClearHistory,
   DataDir,
   GetAppVersion,
@@ -107,6 +108,29 @@ async function onCheckUpdate() {
     updateMsg.value = t('upToDate') // 无网络等错误静默当作"已是最新"
   } finally {
     updateChecking.value = false
+  }
+}
+
+// 诊断包导出
+const diagExporting = ref(false)
+const diagMsg = ref('')
+const diagMsgIsError = ref(false)
+
+async function onExportDiag() {
+  if (diagExporting.value) return
+  diagExporting.value = true
+  diagMsg.value = ''
+  diagMsgIsError.value = false
+  try {
+    const path = await ExportDiagnostics()
+    if (path) {
+      diagMsg.value = t('exportDiagDone', { path })
+    }
+  } catch (e: any) {
+    diagMsgIsError.value = true
+    diagMsg.value = t('exportDiagFail') + (e?.message ? ': ' + e.message : '')
+  } finally {
+    diagExporting.value = false
   }
 }
 async function onOpenRelease() {
@@ -737,6 +761,17 @@ onMounted(load)
           <div class="link-row"><span class="link-label">{{ t('website') }}</span><a class="about-link" :href="websiteUrl" target="_blank" rel="noopener noreferrer">{{ websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') }}</a></div>
           <div class="link-row"><span class="link-label">{{ t('license') }}</span><span>Apache-2.0</span></div>
         </div>
+        <div class="about-diag">
+          <div class="about-diag-info">
+            <span class="about-diag-title">{{ t('exportDiag') }}</span>
+            <span class="about-diag-desc">{{ t('exportDiagDesc') }}</span>
+          </div>
+          <button class="btn-outline btn-sm" :disabled="diagExporting" @click="onExportDiag">
+            <Download :size="14" />
+            {{ diagExporting ? t('exportDiagDoing') : t('exportDiag') }}
+          </button>
+          <div v-if="diagMsg" class="diag-msg" :class="{ 'diag-msg-error': diagMsgIsError }">{{ diagMsg }}</div>
+        </div>
       </div>
     </main>
     </div>
@@ -977,6 +1012,19 @@ onMounted(load)
 .about-links { border-top: 1px solid var(--bg-elevated); padding-top: 12px; }
 .about-link { color: var(--accent); text-decoration: none; }
 .about-link:hover { text-decoration: underline; }
+.about-diag {
+  margin-top: 16px; padding-top: 12px;
+  border-top: 1px solid var(--bg-elevated);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.about-diag-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.about-diag-title { font-size: 13px; color: var(--text); }
+.about-diag-desc { font-size: 11px; color: var(--text-muted); }
+.diag-msg {
+  width: 100%; font-size: 11px; color: var(--text-secondary);
+  word-break: break-all;
+}
+.diag-msg-error { color: var(--danger, #e05c5c); }
 .about-update {
   margin-top: 16px; padding-top: 12px;
   border-top: 1px solid var(--bg-elevated);

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -746,13 +748,17 @@ func (a *App) captureFocusBeforeShow() {
 	bootProbeApp(fmt.Sprintf("focus: captured prev window valid=%v", pw.IsValid()))
 }
 
-// takePrevFocus 取出并清空记录的前一个窗口。
+// takePrevFocus 取出记录的前一个窗口（用于粘贴时恢复焦点）。
+//
+// 注意：这里「不消费」prevFocus——同一面板会话里可能连续多次粘贴（双击一个
+// 再回车另一个），若每次取出就清空，第二次起 prev 变无效，焦点恢复就会退化成
+// blind wait，系统自动激活目标窗口时焦点落到默认控件（资源管理器"新建"按钮），
+// 表现为"第一次能、后面闪一下"。面板每次重新 show 时 captureFocusBeforeShow
+// 会自然用新的前台窗口覆盖 prevFocus，所以不清空是安全且正确的。
 func (a *App) takePrevFocus() paste.PreviousWindow {
 	a.prevFocusMu.Lock()
 	defer a.prevFocusMu.Unlock()
-	pw := a.prevFocus
-	a.prevFocus = paste.PreviousWindow{}
-	return pw
+	return a.prevFocus
 }
 
 func (a *App) setVisible(v bool) {
@@ -993,7 +999,23 @@ func (a *App) PasteItem(id int64) error {
 		}
 	}
 
-	if err := a.CopyToClipboard(id); err != nil {
+	t, content, err := a.repo.GetItemWithContent(id)
+	if err != nil {
+		bootProbeApp("PasteItem: get content err=" + err.Error())
+		a.log.Warn("paste: get content failed", "id", id, "err", err)
+		return err
+	}
+
+	// 文件类型：延迟到窗口隐藏、焦点还原之后再写剪贴板。
+	// WebView2（Chromium 内核）在失去焦点时会清空剪贴板的延迟渲染格式，
+	// 若先写后 Hide，CF_HDROP 会被 WebView2 清掉，导致第 2 次及之后粘贴失败。
+	// 非文件类型不受此影响（文本/图片使用 GMEM_FIXED 格式，WebView2 不干预）。
+	if t == types.TypeFile {
+		writeFn := func() error { return paste.WriteClipboard(t, content) }
+		return a.pasteClipboardToFrontWithWriter(fmt.Sprintf("id=%d", id), writeFn)
+	}
+
+	if err := paste.WriteClipboard(t, content); err != nil {
 		bootProbeApp("PasteItem: copy err=" + err.Error())
 		a.log.Warn("paste: copy to clipboard failed", "id", id, "err", err)
 		return err
@@ -1058,6 +1080,80 @@ func (a *App) PasteText(text string) error {
 // （语义上"读库/写剪贴板是否应该继续"也是锁内决策）。
 //
 // probeTag 仅用于 bootProbeApp 诊断，串到日志里方便区分来源。
+// pasteClipboardToFrontWithWriter 与 pasteClipboardToFront 相同，但在窗口隐藏、
+// 焦点还原完成之后才调用 writeFn 写剪贴板，再发送粘贴键。
+//
+// 用于文件类型粘贴：WebView2（Chromium）在失去焦点时会清空剪贴板的延迟渲染格式
+// (CF_HDROP)，若先写后 Hide 则 CF_HDROP 在 Shift+Insert 到达时已被清掉。
+// 把写入推迟到 Hide+焦点还原之后可绕过此问题。
+func (a *App) pasteClipboardToFrontWithWriter(probeTag string, writeFn func() error) error {
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+	bootProbeApp(fmt.Sprintf("paste: ready(writer) %s trigger=%s", probeTag, s.PasteTrigger))
+	a.log.Info("paste: ready(writer)", "tag", probeTag, "pasteTrigger", s.PasteTrigger)
+
+	prev := a.takePrevFocus()
+	prevValid := prev.IsValid()
+
+	if runtime.GOOS == "darwin" {
+		if a.ctx != nil && a.isVisible() {
+			a.saveWindowPosition()
+			window.HideMain(a.ctx)
+			a.setVisible(false)
+		}
+		time.Sleep(80 * time.Millisecond)
+	} else {
+		// 关键修复"新建蓝框闪一下"：先在 GoPaste 仍可见时，主动把焦点精确恢复
+		// 到文件列表并激活目标窗口（受控流程，不会触发资源管理器默认按钮高亮）；
+		// 之后再 WindowHide。这样隐藏时系统发现前台已是目标窗口、焦点已在文件
+		// 列表，不再做"无主自动激活"，从根源消除那一帧闪烁。
+		if prevValid {
+			paste.PreRestore(prev)
+			bootProbeApp("paste(writer): before RestorePreviousWindow")
+			// 焦点恢复失败必须落盘：这条路径是文件粘贴专用，若 SetForegroundWindow
+			// 被系统拒绝，Shift+Insert 会发到隐藏的 GoPaste 或桌面。
+			if err := paste.RestorePreviousWindow(prev); err != nil {
+				bootProbeApp("paste(writer): restore focus err=" + err.Error())
+				a.log.Warn("paste(writer): restore focus failed", "err", err)
+			} else {
+				bootProbeApp("paste(writer): focus restored")
+			}
+		}
+		if a.ctx != nil && a.isVisible() {
+			a.saveWindowPosition()
+			bootProbeApp("paste(writer): before WindowHide")
+			wailsruntime.WindowHide(a.ctx)
+			bootProbeApp("paste(writer): after WindowHide")
+			a.setVisible(false)
+		} else {
+			bootProbeApp("paste(writer): skip WindowHide (already hidden)")
+		}
+		if !prevValid {
+			bootProbeApp("paste(writer): prevFocus invalid, blind wait")
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+
+	// 窗口已隐藏、焦点已还原，此时 WebView2 已失焦，可以安全写剪贴板
+	if err := writeFn(); err != nil {
+		bootProbeApp("PasteItem(writer): write clipboard err=" + err.Error())
+		a.log.Warn("paste(writer): write clipboard failed", "err", err)
+		return err
+	}
+
+	bootProbeApp("paste(writer): before SendPaste")
+	if err := paste.SendPaste(); err != nil {
+		bootProbeApp("paste(writer): SendPaste err=" + err.Error())
+		a.log.Warn("paste(writer): send paste failed", "err", err)
+		return err
+	}
+	bootProbeApp(fmt.Sprintf("paste(writer): sent %s", probeTag))
+	a.log.Info("paste: sent", "tag", probeTag)
+	return nil
+}
+
 func (a *App) pasteClipboardToFront(probeTag string) error {
 	s := settings.Default()
 	if a.settings != nil {
@@ -1432,6 +1528,146 @@ func (a *App) ExportDataToFile() (string, error) {
 		return "", nil // 用户取消
 	}
 	if err := os.WriteFile(savePath, []byte(data), 0o644); err != nil {
+		return "", err
+	}
+	return savePath, nil
+}
+
+// ExportDiagnostics 将诊断信息打包为 zip 文件，弹出系统保存对话框让用户选择保存路径。
+// 打包内容：
+//   - gopaste.log         — 主日志（slog 输出）
+//   - gopaste.boot.log    — 启动探针日志
+//   - gopaste.stderr.log  — stderr/panic 重定向日志（Windows）
+//   - settings.json       — 用户设置（脱敏：不含加密密钥）
+//   - sysinfo.txt         — 系统信息（OS / 版本 / CPU 数 / 内存等）
+//
+// 返回保存的文件路径；用户取消时返回空字符串。
+func (a *App) ExportDiagnostics() (string, error) {
+	if a.ctx == nil {
+		return "", fmt.Errorf("not ready")
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// --- 1. 确定日志根目录 ---
+	logRoot := ""
+	if a.paths != nil {
+		logRoot = a.paths.Root
+	} else {
+		if ucd, err := os.UserConfigDir(); err == nil {
+			logRoot = filepath.Join(ucd, config.AppName)
+		}
+	}
+
+	// --- 2. 打包日志文件（只读，不报错） ---
+	logFiles := []string{
+		"gopaste.log",
+		"gopaste.boot.log",
+		"gopaste.stderr.log",
+	}
+	// Windows 日志在 %AppData%\Roaming\gopaste\（小写）
+	// GoPaste 数据目录在 %AppData%\Roaming\GoPaste\（大写）
+	// 两个目录都收集，避免遗漏
+	logDirs := []string{logRoot}
+	if ucd, err := os.UserConfigDir(); err == nil {
+		altRoot := filepath.Join(ucd, "gopaste")
+		if altRoot != logRoot {
+			logDirs = append(logDirs, altRoot)
+		}
+	}
+
+	// 用文件名去重：Windows 文件系统大小写不敏感，
+	// GoPaste 数据目录（GoPaste）与日志目录（gopaste）可能指向同一路径，
+	// 同名文件只写入 zip 一次。
+	addedName := map[string]bool{}
+	for _, dir := range logDirs {
+		for _, name := range logFiles {
+			if addedName[name] {
+				continue
+			}
+			p := filepath.Join(dir, name)
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			addedName[name] = true
+			w, err := zw.Create(name)
+			if err != nil {
+				continue
+			}
+			_, _ = w.Write(data)
+		}
+	}
+
+	// --- 3. 打包 settings.json ---
+	if a.paths != nil {
+		if data, err := os.ReadFile(a.paths.Settings); err == nil {
+			if w, err := zw.Create("settings.json"); err == nil {
+				_, _ = w.Write(data)
+			}
+		}
+	}
+
+	// --- 4. 生成系统信息 ---
+	var info strings.Builder
+	info.WriteString("=== GoPaste Diagnostics ===\n")
+	info.WriteString(fmt.Sprintf("GeneratedAt : %s\n", time.Now().Format("2006-01-02 15:04:05 MST")))
+	info.WriteString(fmt.Sprintf("AppVersion  : %s\n", updater.Version))
+	info.WriteString(fmt.Sprintf("GOOS        : %s\n", runtime.GOOS))
+	info.WriteString(fmt.Sprintf("GOARCH      : %s\n", runtime.GOARCH))
+	info.WriteString(fmt.Sprintf("GoVersion   : %s\n", runtime.Version()))
+	info.WriteString(fmt.Sprintf("CPUs        : %d\n", runtime.NumCPU()))
+	info.WriteString(fmt.Sprintf("Goroutines  : %d\n", runtime.NumGoroutine()))
+	info.WriteString(fmt.Sprintf("DataDir     : %s\n", logRoot))
+	if hostname, err := os.Hostname(); err == nil {
+		info.WriteString(fmt.Sprintf("Hostname    : %s\n", hostname))
+	}
+	// 当前 exe 路径
+	if exe, err := os.Executable(); err == nil {
+		info.WriteString(fmt.Sprintf("Executable  : %s\n", exe))
+	}
+	// 内存统计
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	info.WriteString(fmt.Sprintf("HeapAlloc   : %d KB\n", ms.HeapAlloc/1024))
+	info.WriteString(fmt.Sprintf("HeapSys     : %d KB\n", ms.HeapSys/1024))
+	info.WriteString(fmt.Sprintf("NumGC       : %d\n", ms.NumGC))
+
+	if w, err := zw.Create("sysinfo.txt"); err == nil {
+		_, _ = w.Write([]byte(info.String()))
+	}
+
+	if err := zw.Close(); err != nil {
+		return "", fmt.Errorf("build zip: %w", err)
+	}
+
+	// --- 5. 弹出保存对话框 ---
+	defaultName := fmt.Sprintf("GoPaste-diag-%s.zip", time.Now().Format("20060102-150405"))
+	var (
+		savePath string
+		err      error
+	)
+	if runtime.GOOS == "darwin" {
+		savePath = window.SaveFileDialog("导出诊断包", defaultName)
+	} else {
+		savePath, err = wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+			Title:           "导出诊断包",
+			DefaultFilename: defaultName,
+			Filters: []wailsruntime.FileFilter{
+				{DisplayName: "ZIP 压缩包", Pattern: "*.zip"},
+				{DisplayName: "所有文件", Pattern: "*.*"},
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if savePath == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(savePath, buf.Bytes(), 0o644); err != nil {
 		return "", err
 	}
 	return savePath, nil

@@ -39,3 +39,7 @@ func RestorePreviousWindow(p PreviousWindow) error {
 	time.Sleep(50 * time.Millisecond)
 	return nil
 }
+
+// PreRestore 在 Windows 上用于隐藏本窗口前预约目标焦点，消除默认按钮高亮闪烁。
+// X11 下 xdotool windowactivate 已处理焦点，无需此步骤，故为 no-op。
+func PreRestore(PreviousWindow) {}

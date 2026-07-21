@@ -44,3 +44,7 @@ func CapturePreviousWindow() (PreviousWindow, error) {
 func RestorePreviousWindow(PreviousWindow) error {
 	return nil
 }
+
+// PreRestore 在 Windows 上用于隐藏本窗口前预约目标焦点。mac 下 NSPanel 不抢
+// 前台，无此需求，故为 no-op。
+func PreRestore(PreviousWindow) {}

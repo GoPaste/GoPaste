@@ -36,6 +36,11 @@ func (fw *FileWatcher) SetSuppressor(s *Suppressor) { fw.suppressor = s }
 // Events 返回文件事件通道。
 func (fw *FileWatcher) Events() <-chan types.Item { return fw.out }
 
+// HasFilesOnClipboard 报告系统剪贴板当前是否含文件列表（Windows CF_HDROP /
+// macOS file URL / Linux 无）。供上层做粘贴诊断：确认写入后 / 发送粘贴键后
+// 文件格式是否仍在剪贴板，用于区分"焦点没切回去"与"剪贴板被 WebView2 清空"。
+func HasFilesOnClipboard() bool { return pasteboardHasFile() }
+
 // Start 启动轮询监听（500ms 间隔）。
 func (fw *FileWatcher) Start(ctx context.Context) {
 	// 先同步读一次当前剪贴板文件列表，把签名作为 lastSig 初值。

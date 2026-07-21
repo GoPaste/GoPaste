@@ -15,3 +15,7 @@ func WriteText(b []byte) error { return writeClipboardStringGo(b) }
 // WriteImage 把 PNG 图片写入系统剪切板（darwin：走 pasteboardQueue 串行化）。
 // 同上：不能再用 golang.design/x/clipboard.Write(FmtImage)。
 func WriteImage(b []byte) error { return writeClipboardImagePNGGo(b) }
+
+// WriteFiles macOS 平台：把路径列表写为 NSPasteboard 文件 URL 列表。
+// 通过 writeClipboardFileURLsGo 走 pasteboardQueue 串行化，避免与 watcher 并发。
+func WriteFiles(paths []string) error { return writeClipboardFileURLsGo(paths) }

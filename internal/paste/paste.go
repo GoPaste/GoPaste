@@ -6,6 +6,7 @@ package paste
 
 import (
 	"errors"
+	"strings"
 
 	"gopaste/internal/clipboard"
 	"gopaste/internal/types"
@@ -27,9 +28,31 @@ func WriteClipboard(t types.ItemType, content []byte) error {
 	switch t {
 	case types.TypeImage:
 		return clipboard.WriteImage(content)
+	case types.TypeFile:
+		// 文件类型：把路径列表写回为系统文件剪贴板格式（Windows CF_HDROP、
+		// macOS NSPasteboard file URL、Linux text/uri-list），
+		// 而非纯文本——这样目标程序（资源管理器/Finder 等）才能识别并粘贴实际文件。
+		paths := splitPaths(content)
+		if len(paths) == 0 {
+			return nil
+		}
+		return clipboard.WriteFiles(paths)
 	default:
 		return clipboard.WriteText(content)
 	}
+}
+
+// splitPaths 把换行分隔的路径字节切片拆成路径列表，过滤空行。
+func splitPaths(b []byte) []string {
+	parts := strings.Split(string(b), "\n")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // SendPaste 模拟发送 Ctrl/Cmd+V。实现在 paste_<os>.go。
