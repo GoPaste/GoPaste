@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:dev": "vue-tsc --noEmit && vite build --minify false --mode development",
     "preview": "vite preview",
     "build:emoji": "node ../scripts/build-emoji-sprite.mjs"
   },
   "dependencies": {
     "@emoji-mart/data": "^1.2.1",
+    "@wailsio/runtime": "3.0.0",
     "highlight.js": "^11.11.1",
     "lucide-vue-next": "^1.0.0",
     "vue": "^3.2.37"

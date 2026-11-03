@@ -21,11 +21,14 @@ func IsAutoStartEnabled() bool {
 }
 
 // SetAutoStart 切换开机自启设置。enabled=true 启用，false 禁用。
+//
+// 注意：启用分支必须始终重写自启项，不能依据"键是否已存在"提前返回。
+// 否则升级/移动到新路径（如旧版本装到 Program Files、新建绿色版到别处）
+// 后，注册表/启动项仍指向旧 exe，下次开机拉起的是旧版本而非当前版本。
+// 各平台的 platformEnableAutoStart 都是覆盖式写入（Windows SetStringValue /
+// macOS·Linux os.Create），重复调用安全且正是我们期望的"路径刷新"行为。
 func SetAutoStart(enabled bool) error {
 	if enabled {
-		if platformIsAutoStartEnabled() {
-			return nil
-		}
 		return platformEnableAutoStart()
 	}
 	if !platformIsAutoStartEnabled() {

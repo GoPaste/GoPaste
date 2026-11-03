@@ -1,0 +1,62 @@
+version: '3'
+
+# GoPaste 构建入口（Wails v3 / Taskfile）。
+#
+# 常用：
+#   wails3 task dev                         # 开发模式（热重载）
+#   wails3 task build                       # 构建当前平台（产物在 build/bin/）
+#   wails3 task package                     # 打包当前平台（mac .app / Windows NSIS / Linux AppImage）
+#   wails3 task darwin:package:universal    # macOS Universal（仅 macOS 主机）
+#   wails3 task bindings                    # 重新生成前端 TS 绑定（frontend/bindings/）
+#
+# 也可以用 Makefile 的同名目标（make dev / make build / make generate …），Makefile 只是转调这里。
+
+vars:
+  APP_NAME: "GoPaste"
+  # 产物目录沿用 v2 的 build/bin，CI 打包 / 上传步骤和 .gitignore 都依赖这个路径
+  BIN_DIR: "build/bin"
+  PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  GOOS: '{{.GOOS | default OS}}'
+  # 版本号唯一来源：wails.json → info.productVersion。CI 可用 VERSION=x.y.z 覆盖。
+  VERSION:
+    sh: node -e "console.log(require('./wails.json').info.productVersion)" 2>/dev/null || python3 -c "import json;print(json.load(open('wails.json'))['info']['productVersion'])" 2>/dev/null || echo dev
+  # 注入到 internal/updater.Version，供"关于 / 检查更新 / 诊断包"使用
+  VERSION_LDFLAGS: '-X gopaste/internal/updater.Version={{.VERSION}}'
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+  darwin: ./build/darwin/Taskfile.yml
+  linux: ./build/linux/Taskfile.yml
+
+tasks:
+  build:
+    summary: 构建当前平台（或 GOOS=… 指定平台）
+    cmds:
+      - task: "{{.GOOS}}:build"
+
+  package:
+    summary: 打包当前平台的生产构建
+    cmds:
+      - task: "{{.GOOS}}:package"
+
+  run:
+    summary: 运行已构建的应用
+    cmds:
+      - task: "{{.GOOS}}:run"
+
+  dev:
+    summary: 开发模式（Go 改动自动重编译，前端走 Vite HMR）
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
+
+  bindings:
+    summary: 重新生成前端 TS 绑定（frontend/bindings/）
+    cmds:
+      - task: common:generate:bindings
+
+  version:
+    summary: 打印当前版本号（来自 wails.json）
+    cmds:
+      - echo "{{.VERSION}}"

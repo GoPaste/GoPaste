@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GoPaste
+Exec=GoPaste
+Icon=GoPaste
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false

@@ -47,68 +47,104 @@ import (
 func DisableAltSpaceSysMenu(title string) {
 	go func() {
 		defer func() { _ = recover() }()
-		installSubclassOnce(title)
+		installSubclass(title)
 	}()
 }
 
 // EnsureSysMenuSubclass 在窗口被唤起时再触发一次安装。
-// 内部用 sync.Once 保护，多次调用安全；用于覆盖应用启动初期 5s 安装窗口期。
+// 内部有互斥锁 + 成功标记保护，多次调用安全；既覆盖应用启动初期的窗口
+// 创建延迟，也允许前次安装失败后的重试（见 installSubclass 注释）。
 func EnsureSysMenuSubclass(title string) {
 	go func() {
 		defer func() { _ = recover() }()
-		installSubclassOnce(title)
+		installSubclass(title)
 	}()
 }
 
 var (
-	installOnce sync.Once
+	installMu   sync.Mutex
+	procsInited bool
 	installOK   bool
+
+	setSubclassProc     *syscall.LazyProc
+	getWindowLongPtrPrc *syscall.LazyProc
+	setWindowLongPtrPrc *syscall.LazyProc
+	setWindowPosPrc     *syscall.LazyProc
+	subclassCallback    uintptr
 )
 
-func installSubclassOnce(title string) bool {
-	installOnce.Do(func() {
-		user32 := syscall.NewLazyDLL("user32.dll")
-		comctl32 := syscall.NewLazyDLL("comctl32.dll")
-		setSubclass := comctl32.NewProc("SetWindowSubclass")
-		defSubclassProc = comctl32.NewProc("DefSubclassProc")
-		getWindowLongPtr := user32.NewProc("GetWindowLongPtrW")
-		setWindowLongPtr := user32.NewProc("SetWindowLongPtrW")
-		setWindowPos := user32.NewProc("SetWindowPos")
+const subclassID = 0x47504153 // 'GPAS'
 
-		// 等窗口出现，最长 ~5s。
-		var hwnd uintptr
-		for i := 0; i < 50; i++ {
-			hwnd = FindMainWindow(title)
-			if hwnd != 0 {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+// initSysMenuProcs 初始化 DLL proc 与 WndProc 回调（进程内仅一次）。
+// syscall.NewCallback 分配的回调槽位是有限资源（整个进程约 2000 个），
+// 绝不能在每次唤起时重复创建，这里统一缓存复用。
+func initSysMenuProcs() bool {
+	if procsInited {
+		return true
+	}
+	user32 := syscall.NewLazyDLL("user32.dll")
+	comctl32 := syscall.NewLazyDLL("comctl32.dll")
+	setSubclassProc = comctl32.NewProc("SetWindowSubclass")
+	defSubclassProc = comctl32.NewProc("DefSubclassProc")
+	getWindowLongPtrPrc = user32.NewProc("GetWindowLongPtrW")
+	setWindowLongPtrPrc = user32.NewProc("SetWindowLongPtrW")
+	setWindowPosPrc = user32.NewProc("SetWindowPos")
+	subclassCallback = syscall.NewCallback(subclassWndProc)
+	procsInited = true
+	return true
+}
+
+// installSubclass 安装系统菜单防线（可重入、可重试）。
+//
+// 旧实现的缺陷：整段逻辑包在 sync.Once 里，若首次尝试时窗口 5s 内没创建
+// （冷启动/开机遇慢），"已尝试"被永久记住，后续所有 EnsureSysMenuSubclass
+// 调用全部空转——该会话的防线彻底失效，"唤起后按方向键弹出系统菜单"在
+// 这些会话里必现。改为失败后允许重试：每次唤起（setVisible(true)）都会
+// 触发 EnsureSysMenuSubclass，最终一定能装上。
+func installSubclass(title string) bool {
+	installMu.Lock()
+	defer installMu.Unlock()
+	if !initSysMenuProcs() {
+		return false
+	}
+	if installOK {
+		return true
+	}
+
+	// 等窗口出现，最长 ~5s（重试时窗口多半已就绪，首轮即命中）。
+	var hwnd uintptr
+	for i := 0; i < 50; i++ {
+		hwnd = FindMainWindow(title)
+		if hwnd != 0 {
+			break
 		}
-		if hwnd == 0 {
-			return
-		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if hwnd == 0 {
+		return false
+	}
 
-		// === 终极一招：清掉窗口的 WS_SYSMENU 风格位 ===
-		// 之前 v4 用 GetSystemMenu(hwnd, TRUE) 删菜单不奏效——因为 TRUE 只是
-		// 销毁当前菜单副本，下次 OS 还会按窗口风格自动重建一份。要根除必须
-		// 直接关掉 "这个窗口需要系统菜单" 这个开关，即 WS_SYSMENU 风格位。
-		// 关掉之后：
-		//   - Alt+Space 不再弹菜单
-		//   - 菜单不会被自动重建
-		//   - frameless 窗口本来就没标题栏，无任何视觉影响
-		//   - Alt+F4 走 SC_CLOSE 路径，不依赖系统菜单的 "关闭" 项，正常关窗
-		clearSysMenuStyle(hwnd, getWindowLongPtr, setWindowLongPtr, setWindowPos)
+	// === 终极一招：清掉窗口的 WS_SYSMENU 风格位 ===
+	// 之前 v4 用 GetSystemMenu(hwnd, TRUE) 删菜单不奏效——因为 TRUE 只是
+	// 销毁当前菜单副本，下次 OS 还会按窗口风格自动重建一份。要根除必须
+	// 直接关掉 "这个窗口需要系统菜单" 这个开关，即 WS_SYSMENU 风格位。
+	// 关掉之后：
+	//   - Alt+Space 不再弹菜单
+	//   - 菜单不会被自动重建
+	//   - frameless 窗口本来就没标题栏，无任何视觉影响
+	//   - Alt+F4 走 SC_CLOSE 路径，不依赖系统菜单的 "关闭" 项，正常关窗
+	clearSysMenuStyle(hwnd, getWindowLongPtrPrc, setWindowLongPtrPrc, setWindowPosPrc)
 
-		// === 双保险：装子类化拦截器 ===
-		const subclassID = 0x47504153 // 'GPAS'
-		ret, _, _ := setSubclass.Call(
-			hwnd,
-			syscall.NewCallback(subclassWndProc),
-			uintptr(subclassID),
-			0,
-		)
-		installOK = ret != 0
-	})
+	// === 双保险：装子类化拦截器 ===
+	// SetWindowSubclass 对相同 (hwnd, id) 是替换语义，重复调用安全；
+	// 回调已缓存（见 initSysMenuProcs），不会泄漏回调槽位。
+	ret, _, _ := setSubclassProc.Call(
+		hwnd,
+		subclassCallback,
+		uintptr(subclassID),
+		0,
+	)
+	installOK = ret != 0
 	return installOK
 }
 

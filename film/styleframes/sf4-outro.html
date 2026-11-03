@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+  .bg { position: absolute; inset: 0; background:
+    radial-gradient(ellipse 50% 46% at 50% 50%, #1d2230 0%, #14161c 60%, #0d0f14 100%); }
+  .halo { position: absolute; left: 560px; top: 260px; width: 800px; height: 560px; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(23,112,255,.22), rgba(23,112,255,0)); filter: blur(10px); }
+  .lockup { position: absolute; left: 0; right: 0; top: 410px; display: flex; flex-direction: column; align-items: center; }
+  .lockup .wordmark { font-size: 120px; color: #f3f5fa; }
+  .lockup .tag { margin-top: 28px; font: 500 32px var(--sans); color: var(--text-2); letter-spacing: .08em; }
+  .lockup .url { margin-top: 18px; font: 500 26px var(--mono); color: var(--accent); letter-spacing: .04em; }
+  .chip { position: absolute; display: flex; align-items: center; justify-content: center; border-radius: 26px; }
+  .chip svg { width: 46px; height: 46px; stroke-width: 2; }
+  .shadow { box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 24px 48px rgba(0,0,0,.5); }
+  .label { position: absolute; left: 60px; bottom: 44px; font: 500 20px var(--mono); color: #4b5263; letter-spacing: .12em; }
+</style></head>
+<body><div class="stage">
+  <div class="bg"></div>
+  <div class="halo"></div>
+
+  <!-- 合影元素：全部来自前面各镜头（真实截图切片 + 键帽 + 三章色芯片） -->
+  <div class="crop shadow" data-src="../public/textures/panel/panel-dark.png" data-box="0,96,680,92" data-scale="1.05" style="left:90px; top:110px; transform: rotate(-4deg);"></div>
+  <div class="crop shadow" data-src="../public/textures/panel/panel-dark.png" data-box="0,477,680,118" data-scale="0.82" style="left:1250px; top:96px; transform: rotate(3.5deg);"></div>
+  <div class="crop shadow" data-src="../public/textures/panel/panel-dark.png" data-box="12,376,140,90" data-scale="1.9" style="left:1480px; top:640px; transform: rotate(-5deg);"></div>
+  <div class="crop shadow" data-src="../public/textures/panel/panel-dark.png" data-box="6,57,412,32" data-scale="1.5" style="left:150px; top:880px; transform: rotate(2deg); border-radius:14px;"></div>
+  <div class="crop shadow" data-src="../public/textures/panel/panel-dark-search.png" data-box="12,10,572,34" data-scale="1.1" style="left:1130px; top:900px; transform: rotate(-2deg); border-radius:12px;"></div>
+
+  <div class="key" style="left:150px; top:420px; width:180px; height:108px; font-size:40px; transform: rotate(-8deg);">Alt</div>
+  <div class="key" style="left:300px; top:600px; width:108px; height:108px; font-size:54px; transform: rotate(6deg);"><span class="glyph">`</span></div>
+  <div class="key" style="left:1640px; top:390px; width:120px; height:108px; font-size:48px; transform: rotate(7deg);">↵</div>
+
+  <div class="chip shadow" data-icon="search" style="left:660px; top:150px; width:104px; height:104px; background: var(--brand); color:#fff; transform: rotate(-6deg);"></div>
+  <div class="chip shadow" data-icon="star" style="left:1530px; top:250px; width:96px; height:96px; background: var(--amber); color:#1a1406; transform: rotate(8deg);"></div>
+  <div class="chip shadow" data-icon="lock" style="left:780px; top:880px; width:100px; height:100px; background: var(--green); color:#052e16; transform: rotate(5deg);"></div>
+
+  <div class="lockup">
+    <div class="wordmark"><img src="../../build/appicon.png">GoPaste</div>
+    <div class="tag">开源免费 · Windows / macOS / Linux</div>
+    <div class="url">gopaste.wetools.cc</div>
+  </div>
+  <div class="label">SF-04 · 收尾合影 · outro-group-photo-launch · 字标落定 hold ≥ 1s</div>
+  <div class="grain"></div>
+</div>
+<script>
+  document.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = ICONS[el.dataset.icon] })
+  document.querySelectorAll('.crop').forEach((el) => {
+    const [x, y, w, h] = el.dataset.box.split(',').map(Number), s = Number(el.dataset.scale)
+    Object.assign(el.style, {
+      width: w * s + 'px', height: h * s + 'px', backgroundImage: `url(${el.dataset.src})`,
+      backgroundSize: `${680 * s}px ${680 * s}px`, backgroundPosition: `${-x * s}px ${-y * s}px`,
+    })
+  })
+</script>
+</body></html>

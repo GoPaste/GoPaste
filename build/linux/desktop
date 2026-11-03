@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=GoPaste
+Comment=跨平台剪切板管理工具
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/GoPaste %u
+Terminal=false
+Type=Application
+Icon=GoPaste
+Categories=Utility;
+StartupWMClass=GoPaste
+
+ 

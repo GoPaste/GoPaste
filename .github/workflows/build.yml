@@ -60,35 +60,42 @@ jobs:
           - id: mac-arm64
             os: macos-latest
             platform: darwin/arm64
+            task: darwin:package ARCH=arm64
             output: GoPaste.app
             os_arch: darwin_aarch64
             kind: dmg
           - id: mac-x64
             os: macos-latest
             platform: darwin/amd64
+            task: darwin:package ARCH=amd64
             output: GoPaste.app
             os_arch: darwin_x64
             kind: dmg
           - id: mac-universal
             os: macos-latest
             platform: darwin/universal
+            task: darwin:package:universal
             output: GoPaste.app
             os_arch: darwin_universal
             kind: dmg
 
           # ===== Windows =====
-          # x64：同时输出 portable + setup
+          # x64：同时输出 portable + setup（windows:package = 构建 + NSIS 安装包）
           - id: win-x64
             os: windows-latest
             platform: windows/amd64
+            task: windows:package ARCH=amd64
             output: GoPaste.exe
             os_arch: windows_x64
             kind: win
             nsis: 'yes'
-          # x86 (32 位)：仅输出 portable（Wails 官方 NSIS 模板不支持 386）
+          # x86 (32 位)：仅输出 portable（Wails 官方 NSIS 模板不支持 386）。
+          # 注意：Wails v3 官方支持列表只有 amd64/arm64，386 能编译通过但属于非官方架构，
+          # 每次升级 v3 后需在 32 位 Windows 上实机回归。
           - id: win-x86
             os: windows-latest
             platform: windows/386
+            task: windows:build ARCH=386
             output: GoPaste.exe
             os_arch: windows_x86
             kind: win
@@ -98,6 +105,7 @@ jobs:
           - id: linux-x64
             os: ubuntu-latest
             platform: linux/amd64
+            task: linux:build ARCH=amd64
             output: GoPaste
             os_arch: linux_x64
             kind: linux
@@ -112,11 +120,11 @@ jobs:
           # tag message，Release notes 会变成空。
           fetch-depth: 0
 
+      # Wails v3 要求 Go ≥ 1.26；版本与 go.mod 的 toolchain 指令保持一致
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-          check-latest: true
+          go-version: '1.26.10'
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -128,16 +136,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # Wails v3 默认 GTK4 + WebKitGTK 6.0（GTK3 只能用 -tags gtk3 回退，且只保留到 v3.1）。
+          # libx11/libxtst/libxrandr 是 golang.design/x/hotkey、x/clipboard 与模拟粘贴需要的。
           sudo apt-get install -y \
-            libgtk-3-dev \
-            libx11-dev libxtst-dev libxrandr-dev \
-            libwebkit2gtk-4.1-dev \
-            xvfb
-          # Wails v2 查找 webkit2gtk-4.0，Ubuntu 24.04 只有 4.1，创建别名
-          if ! pkg-config --exists webkit2gtk-4.0 && pkg-config --exists webkit2gtk-4.1; then
-            pc=$(pkg-config --variable=pcfiledir webkit2gtk-4.1)
-            sudo ln -sf "$pc/webkit2gtk-4.1.pc" "$pc/webkit2gtk-4.0.pc"
-          fi
+            build-essential pkg-config \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            libx11-dev libxtst-dev libxrandr-dev
 
       # ---------- macOS 依赖：create-dmg ----------
       - name: Install create-dmg (macOS)
@@ -150,9 +155,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # GitHub Windows runner 默认未安装 NSIS，wails 找不到 makensis 会静默跳过 NSIS 打包
+          # GitHub Windows runner 默认未安装 NSIS；wails3 task windows:package 找不到 makensis 会直接失败
           choco install nsis -y --no-progress
-          # 把 NSIS 加入 PATH，使后续步骤的 wails/bash 能调用 makensis
+          # 把 NSIS 加入 PATH，使后续步骤的 wails3 task / bash 能调用 makensis
           $nsisPath = 'C:\Program Files (x86)\NSIS'
           if (-not (Test-Path (Join-Path $nsisPath 'makensis.exe'))) {
             # 有些 chocolatey 版本装到 C:\Program Files\NSIS
@@ -169,15 +174,9 @@ jobs:
           & (Join-Path $nsisPath 'makensis.exe') /VERSION
 
       # ---------- Wails CLI ----------
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      # ---------- Linux 虚拟显示 ----------
-      - name: Start Xvfb
-        if: runner.os == 'Linux'
-        run: |
-          Xvfb :99 -screen 0 1024x768x24 &
-          echo "DISPLAY=:99.0" >> $GITHUB_ENV
+      # 版本必须与 go.mod 中 github.com/wailsapp/wails/v3 一致；v3 每周发 minor，禁止 @latest
+      - name: Install Wails v3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
 
       # ---------- 解析版本号 ----------
       - name: Set version
@@ -193,24 +192,18 @@ jobs:
       # ---------- 构建 ----------
       - name: Wails version
         shell: bash
-        run: wails version
+        run: wails3 version
 
-      - name: Build (with NSIS)
-        if: matrix.nsis == 'yes'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          command -v makensis
-          wails build -clean -platform ${{ matrix.platform }} -nsis \
-            -ldflags "-s -w -X gopaste/internal/updater.Version=${VERSION}"
-
+      # 构建 / 打包统一走 Taskfile（build/<os>/Taskfile.yml）：
+      #   npm install → wails3 generate bindings → 前端构建 → (Windows) syso → go build -tags production
+      #   → (mac) .app + ad-hoc 签名 / (Windows x64) NSIS 安装包
+      # VERSION 覆盖根 Taskfile 的默认值（wails.json），注入 internal/updater.Version。
       - name: Build
-        if: matrix.nsis != 'yes'
         shell: bash
         run: |
           set -euxo pipefail
-          wails build -clean -platform ${{ matrix.platform }} \
-            -ldflags "-s -w -X gopaste/internal/updater.Version=${VERSION}"
+          if [ "${{ matrix.nsis }}" = "yes" ]; then command -v makensis; fi
+          wails3 task ${{ matrix.task }} VERSION=${VERSION}
 
       - name: List build output
         shell: bash
@@ -254,7 +247,7 @@ jobs:
           echo "PORTABLE=$PORTABLE" >> $GITHUB_ENV
 
           if [ "${{ matrix.nsis }}" = "yes" ]; then
-            # Wails 默认输出 GoPaste-amd64-installer.exe / gopaste-amd64-installer.exe
+            # Wails v3 NSIS 模板输出 build/bin/GoPaste-amd64-installer.exe（见 build/windows/nsis/project.nsi）
             INSTALLER_SRC=""
             for f in GoPaste-amd64-installer.exe gopaste-amd64-installer.exe GoPaste-arm64-installer.exe gopaste-arm64-installer.exe GoPaste-*-installer.exe gopaste-*-installer.exe; do
               if [ -f "$f" ]; then INSTALLER_SRC="$f"; break; fi

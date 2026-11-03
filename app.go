@@ -17,13 +17,12 @@ import (
 	"sync"
 	"time"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"gopaste/internal/appguard"
 	"gopaste/internal/clipboard"
 	"gopaste/internal/config"
 	"gopaste/internal/crypto"
-	"gopaste/internal/cursor"
 	"gopaste/internal/extensions"
 	"gopaste/internal/hotkey"
 	"gopaste/internal/paste"
@@ -35,9 +34,22 @@ import (
 	"gopaste/internal/window"
 )
 
-// App 是 Wails 绑定的主结构体。
+// App 是注册给 Wails v3 的 Service：导出方法会被 `wails3 generate bindings`
+// 生成为前端可调用的 TS 函数（frontend/bindings/gopaste/app.ts）。
+//
+// 生命周期（v3）：
+//   - ServiceStartup：核心数据层初始化（主线程同步执行，事件循环尚未启动）
+//   - startUI：剪贴板 / 热键 / 托盘等 UI 相关初始化（ApplicationStarted 之后）
+//   - domReady：前端 runtime 就绪（主窗口 WindowRuntimeReady 事件）
+//   - ServiceShutdown：资源清理
+//
+// 详见各方法注释与 docs/wails-v3-migration-plan.md。
 type App struct {
+	// ctx 由 ServiceStartup 传入，应用退出前会被 v3 取消；后台 goroutine 据此退出。
 	ctx      context.Context
+	// wapp / win 由 main.go 通过 attach 注入；所有 v3 runtime 调用经 app_runtime.go。
+	wapp     *application.App
+	win      *application.WebviewWindow
 	log      *slog.Logger
 	paths    *config.Paths
 	repo     *storage.Repo
@@ -76,7 +88,7 @@ type App struct {
 	//   - setVisible 读写 windowVisible（已有 visMu，单点无问题）
 	//   - window.ShowMain/HideMain 异步 dispatch 到主线程
 	//   - positionWindow() 读写 lastX/lastY（无锁）
-	//   - wailsruntime.EventsEmit 通知前端
+	//   - a.emit 通知前端
 	// 两次并发只会产生"显隐抖动"而非崩溃，但用户体感很差。TryLock 直接丢弃
 	// 冲突的第二次调用 —— 主热键的语义就是"切换"，丢一次等价于"按了又按"。
 	toggleMu sync.Mutex
@@ -99,6 +111,19 @@ type App struct {
 	// 而被 onWindowBlur 自动 HideWindow——观感上就是"主界面隐藏了"。
 	// 这里用 sync.Once 保证进程内只引导一次，后续切换静默降级到 L1。
 	cmdQTapPermGuideOnce sync.Once
+
+	// 开机自启（boot）模式下的 WebView2 自愈相关字段。
+	// 仅当 bootMode 为 true 时启动看门狗；手动启动不受影响。
+	bootMode          bool          // 是否由系统自启拉起（需 WebView2 就绪延迟 + 崩溃自愈）
+	bootStart         time.Time     // 进程启动时刻，用于看门狗宽限计算
+	heartbeatMu       sync.Mutex    // 保护 lastHeartbeat
+	lastHeartbeat     time.Time     // 最近一次前端心跳时间；零值表示尚未收到
+	watchdogMu        sync.Mutex    // 保护 bootWatchdogStop（startUI 与 shutdown 在不同 goroutine）
+	bootWatchdogStop  chan struct{} // 正常退出时关闭，令看门狗 goroutine 退出
+
+	// v3 生命周期拆分后的状态（见 ServiceStartup / startUI 注释）。
+	coreReady   bool      // startupCore 是否成功（数据层可用）；只在 ServiceStartup 中写入
+	uiStartOnce sync.Once // startUI 只执行一次
 }
 
 // NewApp 创建 App 实例。依赖在 startup 中初始化。
@@ -113,16 +138,46 @@ func NewApp() *App {
 // bootProbeApp 转发到 main 包级 bootProbe（同包，不需要导入）。
 func bootProbeApp(stage string) { bootProbe(stage) }
 
-// startup 初始化各子系统。
-func (a *App) startup(ctx context.Context) {
-	bootProbeApp("startup: enter")
+// ServiceStartup 是 v3 Service 生命周期入口，对应 v2 OnStartup 的前半段（数据层）。
+//
+// 时序（与 v2 的关键差异，务必读）：
+//
+//	v3 的 App.Run() 在**主 goroutine（macOS 上即主线程）**上同步调用 ServiceStartup，
+//	此时原生事件循环（NSApp run / GTK main / Win32 消息循环）**尚未启动**。
+//	任何会 dispatch_sync 到主线程、或依赖原生窗口 / 托盘 / 热键的初始化如果放在这里，
+//	在 macOS 上会直接死锁。因此这里只做纯 Go 的核心初始化（路径、日志、加密、存储、设置），
+//	保证前端首次 RPC（GetSettings / ListItems）时数据层已就绪 —— 与 v2 OnStartup
+//	"在 index.html 加载前完成"的语义一致。
+//	UI 相关初始化放在 startUI，由 main.go 在 events.Common.ApplicationStarted 之后调用。
+//
+// 始终返回 nil：与 v2 一致，核心初始化失败只记录日志、不阻止进程启动（窗口照常出现，
+// RPC 返回 "storage not ready"）。若返回 error，v3 会中止 Run，boot 模式下还会触发
+// 自愈重拉起，反而放大故障。
+func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
+	bootProbeApp("ServiceStartup: enter")
 	a.ctx = ctx
+	a.coreReady = a.startupCore()
+	bootProbeApp(fmt.Sprintf("ServiceStartup: core ready=%v", a.coreReady))
+	return nil
+}
+
+// ServiceShutdown 对应 v2 的 OnShutdown：v3 在退出时按注册逆序调用。
+func (a *App) ServiceShutdown() error {
+	bootProbeApp("ServiceShutdown: enter")
+	a.shutdown()
+	return nil
+}
+
+// startupCore 初始化不依赖原生 UI 的子系统。返回 false 表示数据层不可用，
+// 此时 startUI 也不再启动剪贴板监听 / 热键 / 托盘（与 v2 startup 早退的行为一致）。
+func (a *App) startupCore() bool {
+	bootProbeApp("startup: enter")
 
 	// 关闭 OS 层 Power Throttling（Windows 11 默认会对没有 foreground
 	// 窗口的"后台进程"做激进 EcoQoS 节流，长时间空闲后甚至完全 suspend
 	// 我们的所有线程，导致热键唤起卡死）。这一步必须放在最前面：越早
 	// 标记越好，避免启动期间就被 OS 节流策略影响。
-	// 非 Windows 平台是 no-op。
+	// 非 Windows 平台是 no-op；它是进程级设置，不依赖窗口。
 	window.DisablePowerThrottling()
 	bootProbeApp("startup: power throttling disabled")
 
@@ -130,7 +185,7 @@ func (a *App) startup(ctx context.Context) {
 	if err != nil {
 		bootProbeApp("startup: ResolvePaths err=" + err.Error())
 		a.log.Error("resolve paths", "err", err)
-		return
+		return false
 	}
 	a.paths = paths
 	bootProbeApp("startup: paths.Root=" + paths.Root)
@@ -144,19 +199,19 @@ func (a *App) startup(ctx context.Context) {
 	key, err := crypto.LoadOrCreateKey(paths.Key)
 	if err != nil {
 		a.log.Error("load key", "err", err)
-		return
+		return false
 	}
 	cipher, err := crypto.New(key)
 	if err != nil {
 		a.log.Error("new cipher", "err", err)
-		return
+		return false
 	}
 
 	// 2) 存储
 	repo, err := storage.Open(paths.DB, paths.Images, cipher)
 	if err != nil {
 		a.log.Error("open db", "err", err)
-		return
+		return false
 	}
 	a.repo = repo
 
@@ -180,14 +235,45 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
-	// 静默启动：窗口初始隐藏
-	if s.SilentStart {
-		a.setVisible(false)
-	} else {
+	// 静默启动：记录窗口初始可见状态。这里只写标志位，不调 setVisible：
+	// setVisible(true) 在 Windows 上会安装系统菜单子类化，需要 HWND 已存在，
+	// 而此时原生窗口还没创建 —— 子类化的安装放在 startUI 里补做。
+	a.visMu.Lock()
+	a.windowVisible = !s.SilentStart
+	a.visMu.Unlock()
+	return true
+}
+
+// startUI 初始化依赖原生事件循环的子系统，对应 v2 OnStartup 的后半段。
+//
+// 由 main.go 在 events.Common.ApplicationStarted 之后调用（v3 已在独立 goroutine
+// 中派发应用事件），此时原生事件循环已经在跑：
+//   - 托盘 / 热键 / NSStatusItem 等内部 dispatch 到主线程的调用不会死锁；
+//   - 主窗口的原生对象可能仍在异步创建中，所以依赖窗口的步骤（任务栏、NSPanel 加固）
+//     继续沿用 v2 时代的轮询重试。
+//
+// 通过 uiStartOnce 保证只执行一次。
+func (a *App) startUI() {
+	a.uiStartOnce.Do(a.startUIOnce)
+}
+
+func (a *App) startUIOnce() {
+	bootProbeApp("startUI: enter")
+	if !a.coreReady {
+		bootProbeApp("startUI: core not ready, skip")
+		return
+	}
+	ctx := a.ctx
+	s := settings.Default()
+	if a.settings != nil {
+		s = a.settings.Get()
+	}
+
+	// 补做 startupCore 里跳过的 setVisible 副作用（Windows 系统菜单子类化）
+	if a.isVisible() {
 		a.setVisible(true)
 	}
 
-	// === 二分调试 step2：只开剪贴板，其它仍禁 ===
 	bootProbeApp("startup: enabling clipboard only")
 	suppressor := clipboard.NewSuppressor()
 	w := clipboard.New()
@@ -234,7 +320,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// macOS：Dock 图标点击呼出面板。
 		// go showPanel() 脱离主线程，避免 applicationShouldHandleReopen:
-		// 在主线程同步调 wailsruntime.* 导致死锁。
+		// 在主线程同步调 v3 窗口 API（内部 InvokeSync）导致死锁。
 		if runtime.GOOS == "darwin" {
 			tray.SetDockClickCallback(func() {
 				go a.showPanel()
@@ -242,23 +328,30 @@ func (a *App) startup(ctx context.Context) {
 			bootProbeApp("startup: dock click callback installed")
 		}
 	} else {
-		// Linux：fyne.io/systray，需等 domReady 再 flush start()
-		bootProbeApp("startup: tray deferred to domReady (linux)")
+		// Linux：fyne.io/systray（RunWithExternalLoop）。v2 时代必须等 domReady
+		// 才能 flush start()（那时 GTK 主循环还没跑）；v3 的 startUI 在
+		// ApplicationStarted 之后执行，GTK 主循环已就绪，所以这里直接 flush。
+		// domReady 里仍保留一次 FlushPendingStart（幂等），两者先后顺序不影响结果。
 		a.startTray()
+		tray.FlushPendingStart()
+		bootProbeApp("startup: tray started (linux)")
 	}
 	bootProbeApp("startup: tray block done")
 
-	// 7) 启动时按策略 prune
+	// 7) 启动时按策略 prune，并启动低频周期 prune。
+	// 周期 prune 是必需的：本应用常驻不重启（Windows/macOS 都是隐藏而非退出），
+	// 只靠"启动时 + 设置变更时"清理，连续运行几天后历史条目会持续突破
+	// MaxItems 直到下次重启。查询本身只是一次带索引的 count + find，开销可忽略。
 	go a.runPrune()
+	a.startPruneLoop(a.ctx)
 
-	// 8) Windows 任务栏图标显隐（需要 HWND 就绪后再应用；轮询 3 秒内生效）
+	// 8) Windows 任务栏图标显隐（需要 HWND 就绪后再应用；轮询 5 秒内生效）
 	go a.applyTaskbarIconWithRetry()
 
-	// 9) macOS：把主窗口改造成 NSPanel + NonactivatingPanel。
-	// 这样"显示面板"不会抢走前台应用的 active 状态，粘贴时也就不再需要
-	// hide + activate 的回环（那才是 mac 上反复闪退的根源）。
-	// Wails startup 回调不保证 NSWindow 已挂到 [NSApp windows]，所以轮询。
-	go a.convertMainWindowToPanelWithRetry()
+	// 9) macOS：主窗口已由 v3 原生创建为 NonactivatingPanel（见
+	// internal/window/options_darwin.go）。这里隐藏红绿灯、兜底重设面板属性，
+	// 并校验 Panel 选项确实生效。原生窗口可能仍在异步创建中，所以轮询。
+	go a.reinforcePanelWithRetry()
 
 	// 10) macOS：Cmd+Q 防误触拦截（"扩展功能"）。
 	// - L1/L2（sendEvent: swizzle + local monitor）：仅 GoPaste 自身前台生效，无需权限
@@ -274,11 +367,75 @@ func (a *App) startup(ctx context.Context) {
 		s.CmdQBehavior, string(extensions.NormalizeCmdQBehavior(s.CmdQBehavior))))
 	go a.applyCmdQGlobalTap(extensions.NormalizeCmdQBehavior(s.CmdQBehavior))
 
-	a.log.Info("GoPaste started", "data", paths.Root)
+	if a.paths != nil {
+		a.log.Info("GoPaste started", "data", a.paths.Root)
+	}
+
+	// 开机自启模式：启动 WebView2 崩溃看门狗。前端会周期性调用 Heartbeat()
+	// 上报存活；若心跳停滞（WebView2 进程崩溃），看门狗自动重拉起进程自愈。
+	if a.bootMode {
+		stop := make(chan struct{})
+		a.watchdogMu.Lock()
+		a.bootWatchdogStop = stop
+		a.watchdogMu.Unlock()
+		go a.bootHealthWatchdog(stop)
+	}
+	bootProbeApp("startUI: done")
 }
 
-// shutdown 清理资源。
-func (a *App) shutdown(ctx context.Context) {
+// Heartbeat 由前端周期性调用，用于开机自启（boot）模式下探测 WebView2 是否存活。
+// 看门狗在宽限期内未收到心跳、或心跳停滞超过阈值时，判定 WebView2 进程已崩溃，
+// 触发自愈重拉起（见 bootHealthWatchdog / relaunchForBoot）。非 boot 模式不会启动看门狗。
+func (a *App) Heartbeat() {
+	a.heartbeatMu.Lock()
+	a.lastHeartbeat = time.Now()
+	a.heartbeatMu.Unlock()
+}
+
+// bootHealthWatchdog 仅在开机自启模式运行：轮询前端心跳，若 WebView2 进程崩溃
+// （心跳停滞）则重拉起本进程以实现自愈。正常退出时 shutdown 会关闭 stop channel。
+//
+// 注意：仅在"已收到过一次心跳后停滞"时才重拉起，避免前端绑定未生成
+// （Heartbeat 方法不存在）时误判为崩溃而无限重启。
+func (a *App) bootHealthWatchdog(stop <-chan struct{}) {
+	const grace = 15 * time.Second    // 允许首屏渲染 + 前端启动心跳的宽限期
+	const threshold = 8 * time.Second // 超过该时长无心跳即判定 WebView 已死
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		a.heartbeatMu.Lock()
+		last := a.lastHeartbeat
+		a.heartbeatMu.Unlock()
+		// 从未收到心跳：可能是极早期崩溃或前端绑定未就绪，仅记录不重启，
+		// 由 boot 就绪延迟与 wails.Run 错误重试兜底。
+		if last.IsZero() {
+			if time.Since(a.bootStart) > grace {
+				bootProbeApp("boot watchdog: no heartbeat within grace, webview possibly dead (not auto-relaunching)")
+			}
+			continue
+		}
+		if time.Since(last) > threshold {
+			bootProbeApp("boot watchdog: heartbeat stale, webview dead, self-heal relaunch")
+			relaunchForBoot()
+			return
+		}
+	}
+}
+
+// shutdown 清理资源（由 ServiceShutdown 调用）。
+func (a *App) shutdown() {
+	// 关闭 boot 看门狗，避免正常退出时被误判为 WebView 崩溃而重拉起。
+	a.watchdogMu.Lock()
+	if a.bootWatchdogStop != nil {
+		close(a.bootWatchdogStop)
+		a.bootWatchdogStop = nil
+	}
+	a.watchdogMu.Unlock()
 	if a.hotkey != nil {
 		_ = a.hotkey.Close()
 	}
@@ -290,58 +447,47 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// domReady 在 wails 完成 runtime.js 注入、前端 DOM 就绪之后被调用。
-func (a *App) domReady(ctx context.Context) {
-	_ = ctx
+// domReady 在主窗口的前端 runtime 就绪后被调用（v3 events.Common.WindowRuntimeReady，
+// 对应 v2 的 OnDomReady；页面重载时会再次触发，以下逻辑均可重入）。
+func (a *App) domReady() {
 	bootProbeApp("domReady: enter")
-	// macOS tray 已改为纯 cgo NSStatusItem，在 startup 里直接启动，
-	// 无需等 domReady。Linux（fyne.io/systray）仍需 FlushPendingStart。
+	// macOS tray 已改为纯 cgo NSStatusItem，在 startUI 里直接启动。
+	// Linux（fyne.io/systray）在 startUI 里已 flush；这里再 flush 一次兜底（幂等）。
 	if runtime.GOOS != "darwin" {
 		tray.FlushPendingStart()
 	}
 
-	// 冷启动焦点修复：
-	// 当 StartHidden=false（用户没开静默启动）时，wails 会自己把窗口显示
-	// 出来 —— 但它走的是 ShowWindow，不会调 forceForeground。background
-	// process 启动新窗口时 OS 不会自动把键盘焦点给它，结果就是窗口可见但
-	// 不在前台，所有快捷键失灵，必须用鼠标点一下才"激活"。
+	// 冷启动焦点：当 StartHidden=false（用户没开静默启动）时，窗口已经由 wails 显示
+	// 出来了，但键盘焦点不一定给到了它。这里显式走一次 ShowMain + emit window:show，
+	// 让前端跑 onWindowShow（聚焦搜索框、回到顶部等）。
 	//
-	// 修法：domReady 时若窗口已显示，主动调 ShowMain 抢前台 + emit
-	// window:show 让前端跑 onWindowShow（聚焦搜索框、回到顶部等）。
-	//
-	// macOS：NonactivatingPanel 不会被 AppKit 自动激活，同样需要处理。
-	// 用 ActivateForDialog 临时激活让窗口能接收键盘，然后立刻 Deactivate
-	// 恢复非激活状态（不抢前台应用）。
-	// Windows：同理，ShowMain 抢前台。
+	// macOS 上刻意**不**调用 ActivateForDialog：面板是 NonactivatingPanel，
+	// "应用始终不是 active" 是这个设计的前提。之前这里激活后又不恢复，
+	// 让整个 app 长期处于 active，与面板的非激活语义冲突。
 	silentStart := false
 	if a.settings != nil {
 		silentStart = a.settings.Get().SilentStart
 	}
-	if !silentStart && a.ctx != nil && !wailsruntime.WindowIsMinimised(a.ctx) {
+	if !silentStart && a.uiReady() && !a.isMinimised() {
 		if runtime.GOOS == "darwin" {
 			go func() {
-				// 稍等 NSPanel 完全显示后再激活，避免时序问题
+				// 稍等 NSPanel 完全显示后再抢焦点，避免时序问题
 				time.Sleep(200 * time.Millisecond)
-				window.ActivateForDialog()
-			a.setVisible(true)
-			// 冷启动首次点击无效问题：
-				// 之前这里会立刻调 DeactivateAfterDialog() 让 app 回到非激活
-				// 状态（保持"不抢前台"的 NonactivatingPanel 语义）。但副作用是
-				// AppKit 把"非激活 app 上的第一次点击"当成激活事件吞掉——用户
-				// 看到的现象就是"冷启动后首次点击任何按钮都无效、鼠标不显示手型"。
-				// 现在不再立即 deactivate：让 app 保持 active 直到用户自己操作
-				// 或窗口下次 orderOut 时由 AppKit 自动让出前台。热启动走的是
-				// OrderFront/makeKey 路径，不经过这里，"不抢前台"语义不受影响。
-				wailsruntime.EventsEmit(a.ctx, "window:show")
+				a.positionWindow()
+				window.ShowMain(a.mainWindow())
+				a.setVisible(true)
+				a.emit("window:show")
 				bootProbeApp("domReady: cold-start mac focus done")
 			}()
 		} else if runtime.GOOS == "windows" {
-		window.ShowMain(a.ctx)
-		a.setVisible(true)
-		wailsruntime.EventsEmit(a.ctx, "window:show")
-		bootProbeApp("domReady: cold-start windows ShowMain done")
+			a.positionWindow()
+			window.ShowMain(a.mainWindow())
+			a.setVisible(true)
+			a.emit("window:show")
+			bootProbeApp("domReady: cold-start windows ShowMain done")
 		}
 	}
+
 }
 
 func (a *App) registerHotkey() {
@@ -400,7 +546,7 @@ func (a *App) registerHotkey() {
 // showPanelAndSwitchTab 由 Alt+N 全局快捷键触发：
 // 若窗口未显示则唤起，然后通知前端切到第 idx 个 tab。
 func (a *App) showPanelAndSwitchTab(idx int) {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
 	// 输入法正在组合（如中文拼音未确认），此时热键只应交给输入法处理，
@@ -420,23 +566,51 @@ func (a *App) showPanelAndSwitchTab(idx int) {
 	// 前端 onWindowShow 中需要根据 tab:switch 设置的标志位跳过
 	// "激活时切换至全部分组 / 回到顶部" 这两个副作用，否则会把
 	// 用户刚指定的 tab 反向覆盖回 "全部"。
-	wailsruntime.EventsEmit(a.ctx, "tab:switch", idx)
-	if wailsruntime.WindowIsMinimised(a.ctx) {
+	a.emit("tab:switch", idx)
+	if a.isMinimised() {
 		a.captureFocusBeforeShow()
-		wailsruntime.WindowUnminimise(a.ctx)
-		window.ShowMain(a.ctx)
+		a.unminimise()
 		a.positionWindow()
+		window.ShowMain(a.mainWindow())
 		a.setVisible(true)
-		wailsruntime.EventsEmit(a.ctx, "window:show")
+		a.emit("window:show")
 	} else if !a.isVisible() {
 		a.captureFocusBeforeShow()
-		window.ShowMain(a.ctx)
 		a.positionWindow()
+		window.ShowMain(a.mainWindow())
 		a.setVisible(true)
-		wailsruntime.EventsEmit(a.ctx, "window:show")
+		a.emit("window:show")
 	}
 	// 若窗口已经在前台，上面不会 emit window:show，但 tab:switch 已经发了，
 	// 仍然会切到目标 tab，符合 "按 Alt+N 总是切到 N" 的预期。
+}
+
+// pruneInterval 周期清理的间隔。
+// 1 小时足够贴近 MaxItems/MaxDays 语义，又不会在高频复制场景下反复扫表。
+const pruneInterval = time.Hour
+
+// startPruneLoop 启动周期 prune，直到 ctx 取消（应用退出时由 v3 取消）。
+//
+// 必要性：本应用是常驻进程，启动与设置变更之外的长时间运行中，历史条目只会
+// 单调增长（见 startUI 第 7 步注释）。runPrune 只清理非置顶非收藏的旧记录，
+// 对用户可见数据无副作用；清理后同时删除原图与缩略图文件（removeItemFiles）。
+func (a *App) startPruneLoop(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	go func() {
+		defer func() { _ = recover() }()
+		ticker := time.NewTicker(pruneInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.runPrune()
+			}
+		}
+	}()
 }
 
 func (a *App) runPrune() {
@@ -490,129 +664,11 @@ func (a *App) saveAndNotify(ctx context.Context, item types.Item) {
 	}
 	notice := cp
 	notice.Content = nil
-	wailsruntime.EventsEmit(ctx, "clipboard:new", notice)
+	a.emit("clipboard:new", notice)
 }
 
-// clampToScreen 约束窗口坐标在屏幕可见工作区内（排除任务栏等系统 UI）。
-//
-// 坐标单位约定（这是本项目反复翻车的地方，务必读清楚）：
-//   - Windows：全部用 **物理像素**。
-//     cursor.Position / cursor.WorkArea 均返回 Win32 原值（物理像素）；
-//     Wails 的 `WindowSetPosition(x, y)` 内部实际是
-//         SetWindowPos(hwnd, HWND_TOP, workRect.Left+x, workRect.Top+y, …)
-//     其中 workRect 来自 GetMonitorInfo 也是物理像素——Wails 并未对入参做
-//     DPI 缩放。所以我们把 (absX-workLeft, absY-workTop) 直接传给它即可；
-//     但 WindowGetSize 内部做了 scaleToDefaultDPI，返回的是**逻辑像素**，
-//     这里需要乘以 DPI 缩放才能和 cursor/工作区同单位参与 clamp。
-//   - macOS/Linux：Wails / Cocoa 都用逻辑像素，scale==1，下面的逻辑保持不变。
-//
-// 返回：(absX, absY, workLeft, workTop)，全部是 Windows 物理像素 /
-// 非 Windows 的逻辑像素。调用方再减去 work 原点得到 WindowSetPosition 入参。
-func (a *App) clampToScreen(x, y int) (int, int, int, int) {
-	// 窗口尺寸：Wails 返回逻辑像素，Windows 下乘以鼠标所在显示器的 DPI scale
-	// 换算成物理像素，才能和 workArea / cursor 同单位比较。
-	w, h := wailsruntime.WindowGetSize(a.ctx)
-	scale := cursor.ScaleForPoint(x, y)
-	if scale <= 0 {
-		scale = 1
-	}
-	w = int(float64(w) * scale)
-	h = int(float64(h) * scale)
-
-	// 优先使用系统工作区（Windows 会排除任务栏）
-	var sx, sy, sw, sh int
-	wx, wy, ww, wh := cursor.WorkArea()
-	if ww > 0 && wh > 0 {
-		sx, sy, sw, sh = wx, wy, ww, wh
-	} else {
-		// fallback：用 Wails 返回的屏幕总尺寸（其它平台）
-		screens, err := wailsruntime.ScreenGetAll(a.ctx)
-		if err != nil || len(screens) == 0 {
-			return x, y, 0, 0
-		}
-		for _, sc := range screens {
-			if sc.IsCurrent {
-				sw, sh = sc.Size.Width, sc.Size.Height
-				break
-			}
-		}
-		if sw == 0 {
-			sw, sh = screens[0].Size.Width, screens[0].Size.Height
-		}
-	}
-
-	// 留出安全边距（物理像素），避免窗口阴影/边框被屏幕或任务栏切到。
-	margin := int(8 * scale)
-	minX := sx + margin
-	minY := sy + margin
-	maxX := sx + sw - w - margin
-	maxY := sy + sh - h - margin
-	if maxX < minX {
-		maxX = minX
-	}
-	if maxY < minY {
-		maxY = minY
-	}
-	if x < minX {
-		x = minX
-	}
-	if y < minY {
-		y = minY
-	}
-	if x > maxX {
-		x = maxX
-	}
-	if y > maxY {
-		y = maxY
-	}
-	return x, y, sx, sy
-}
-
-// setWindowPosAbsolute 以「绝对屏幕坐标」方式设置窗口位置。
-// Windows 下 absX/absY 应为物理像素；其它平台为逻辑像素。
-// 内部会减去工作区原点得到 Wails WindowSetPosition 所需的「相对工作区」坐标。
-func (a *App) setWindowPosAbsolute(absX, absY int) {
-	x, y, workLeft, workTop := a.clampToScreen(absX, absY)
-	wailsruntime.WindowSetPosition(a.ctx, x-workLeft, y-workTop)
-}
-
-// positionWindow 根据设置决定窗口出现位置。
-func (a *App) positionWindow() {
-	s := settings.Default()
-	if a.settings != nil {
-		s = a.settings.Get()
-	}
-	switch s.WindowPosition {
-	case "follow":
-		// 跟随鼠标：窗口左上角对齐鼠标位置
-		mx, my := cursor.Position()
-		if mx > 0 || my > 0 {
-			a.setWindowPosAbsolute(mx, my)
-		} else {
-			wailsruntime.WindowCenter(a.ctx)
-		}
-	case "remember":
-		// 记住位置：恢复上次保存的坐标
-		if a.posInited {
-			a.setWindowPosAbsolute(a.lastX, a.lastY)
-		} else {
-			wailsruntime.WindowCenter(a.ctx)
-		}
-	default: // "center"
-		wailsruntime.WindowCenter(a.ctx)
-	}
-}
-
-// saveWindowPosition 保存当前窗口位置。
-func (a *App) saveWindowPosition() {
-	if a.ctx == nil {
-		return
-	}
-	x, y := wailsruntime.WindowGetPosition(a.ctx)
-	a.lastX = x
-	a.lastY = y
-	a.posInited = true
-}
+// 窗口定位（clampToScreen / positionWindow / saveWindowPosition）已按平台拆到
+// position.go / position_windows.go / position_other.go，坐标语义见各文件注释。
 
 // togglePanel 切换主窗口的可见状态：若已显示则隐藏，否则显示并置顶。
 // 由托盘左键点击和全局快捷键共享。
@@ -625,7 +681,7 @@ func (a *App) saveWindowPosition() {
 // 5 秒内返回（典型耗时 < 100ms），自动 dump 全部 goroutine stack 到 boot.log。
 // 这样下次复现时能看到主线程到底卡在哪一行（WindowShow / EventsEmit / …）。
 func (a *App) togglePanel() {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
 	// 热键回调现在走 `go fn()`，用户连按会并发进入。TryLock 直接丢弃
@@ -654,20 +710,20 @@ func (a *App) togglePanel() {
 	defer bootProbeApp("togglePanel: exit")
 
 	bootProbeApp("togglePanel: WindowIsMinimised?")
-	minimised := wailsruntime.WindowIsMinimised(a.ctx)
+	minimised := a.isMinimised()
 	bootProbeApp(fmt.Sprintf("togglePanel: minimised=%v", minimised))
 
 	if minimised {
 		a.captureFocusBeforeShow()
 		bootProbeApp("togglePanel: before WindowUnminimise")
-		wailsruntime.WindowUnminimise(a.ctx)
+		a.unminimise()
 		bootProbeApp("togglePanel: before ShowMain")
-		window.ShowMain(a.ctx)
+		window.ShowMain(a.mainWindow())
 		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
 			a.setVisible(true)
 			bootProbeApp("togglePanel: before EventsEmit window:show")
-			wailsruntime.EventsEmit(a.ctx, "window:show")
+			a.emit("window:show")
 			bootProbeApp("togglePanel: emit done (minimised path)")
 		return
 	}
@@ -678,21 +734,21 @@ func (a *App) togglePanel() {
 	if visible {
 		bootProbeApp("togglePanel: hide path")
 		a.saveWindowPosition()
-		window.HideMain(a.ctx)
+		window.HideMain(a.mainWindow())
 		a.setVisible(false)
 		bootProbeApp("togglePanel: hide done")
 	} else {
 		bootProbeApp("togglePanel: show path")
 		a.captureFocusBeforeShow()
 		bootProbeApp("togglePanel: before ShowMain")
-		window.ShowMain(a.ctx)
+		window.ShowMain(a.mainWindow())
 		bootProbeApp("togglePanel: before positionWindow")
 		a.positionWindow()
 		a.setVisible(true)
 		// 通知前端窗口已显示，触发"激活时回到顶部 / 切换至全部分组"等逻辑。
 		// Windows 上 visibilitychange 不一定由 WindowShow 触发，所以需要显式 emit。
 		bootProbeApp("togglePanel: before EventsEmit window:show")
-		wailsruntime.EventsEmit(a.ctx, "window:show")
+		a.emit("window:show")
 		bootProbeApp("togglePanel: emit done (show path)")
 	}
 }
@@ -709,7 +765,7 @@ func (a *App) SetIsComposing(v bool) {
 
 // showPanel 无条件显示窗口（用于 Dock 图标点击）。
 func (a *App) showPanel() {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
 	// Dock 点击本身频率不会高，但与热键/托盘并发时仍要防止显隐抖动。
@@ -717,14 +773,14 @@ func (a *App) showPanel() {
 		return
 	}
 	defer a.toggleMu.Unlock()
-	if wailsruntime.WindowIsMinimised(a.ctx) {
-		wailsruntime.WindowUnminimise(a.ctx)
+	if a.isMinimised() {
+		a.unminimise()
 	}
 	a.captureFocusBeforeShow()
-	window.ShowMain(a.ctx)
 	a.positionWindow()
+	window.ShowMain(a.mainWindow())
 	a.setVisible(true)
-	wailsruntime.EventsEmit(a.ctx, "window:show")
+	a.emit("window:show")
 }
 
 // captureFocusBeforeShow 在窗口显示前抓住当前前台窗口，便于稍后粘贴时还原焦点。
@@ -783,36 +839,40 @@ func (a *App) isVisible() bool {
 	return a.windowVisible
 }
 
-// convertMainWindowToPanelWithRetry 在 macOS 启动阶段把 NSWindow 改造成
-// NonactivatingPanel。调用是幂等的，我们只要在 NSWindow 已经被 AppKit
-// 注册到 [NSApp windows] 之后做一次即可。
-// 其他平台下 window.ConvertToNonactivatingPanel 是 no-op，这里整个函数
-// 也是早退，不做任何事。
-func (a *App) convertMainWindowToPanelWithRetry() {
+// reinforcePanelWithRetry 在 macOS 启动阶段处理主面板：隐藏红绿灯、兜底重设
+// collectionBehavior / 浮动层级，并校验 v3 的 Panel 选项确实生效。
+// 其他平台下 window.AfterWindowCreated 恒返回 PanelOK，这里直接早退。
+//
+// v2 → v3：v2 时代这里要用 isa swap 把 NSWindow 换成 NSPanel 子类；v3 已通过
+// WebviewWindowOptions.Mac.WindowClass=Panel 原生创建 NonactivatingPanel，
+// **不能再 isa swap**（会破坏 v3 WebviewPanel 的 sendEvent:/keyDown: 重写），
+// 详见 internal/window/panel_darwin.m 文件头。
+func (a *App) reinforcePanelWithRetry() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	// Wails 创建 NSWindow 的时机略晚于 OnStartup 回调——startup 刚调用时
-	// [NSApp windows] 可能还没收录主窗口。最多 3 秒轮询。
-	//
-	// 关键作用：
-	//   1) 把 NSWindow 替换成 GoPasteNSPanel（NSPanel 子类）
-	//   2) 加 NSWindowStyleMaskNonactivatingPanel：显示面板不抢前台 active app
-	//      → 粘贴流程才能正常工作
-	//   3) 隐藏左上角 traffic lights（close/min/zoom）
-	//   4) 设置 floating level / canJoinAllSpaces / hidesOnDeactivate=NO
+	// v3 的原生窗口在 ApplicationStarted 之后异步创建，startUI 运行时
+	// [NSApp windows] 可能还没收录主窗口。最多轮询 3 秒。
 	deadline := time.Now().Add(3 * time.Second)
+	status := window.PanelNotFound
 	for time.Now().Before(deadline) {
-		window.ConvertToNonactivatingPanel(window.Title)
-		// ConvertToNonactivatingPanel 内部幂等 + 找不到窗口会 NSLog 一条。
-		// 我们这里简单轮询，命中后再调一次也无副作用。
-		time.Sleep(200 * time.Millisecond)
-		// 尝试 3~4 次就够了，大概 800ms。给 1.5s 充分冗余后退出。
-		if time.Since(deadline.Add(-3*time.Second)) > 1500*time.Millisecond {
+		status = window.AfterWindowCreated(a.mainWindow())
+		if status != window.PanelNotFound {
 			break
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	bootProbeApp("convertMainWindowToPanelWithRetry: done")
+	switch status {
+	case window.PanelOK:
+		bootProbeApp("reinforcePanelWithRetry: NonactivatingPanel OK")
+	case window.PanelNotNonactivating:
+		// 这是 P0 级问题：面板会抢前台，粘贴的 Cmd+V 可能打回 GoPaste 自己。
+		bootProbeApp("reinforcePanelWithRetry: WARN main window is NOT a NonactivatingPanel")
+		a.log.Error("main window is not a NonactivatingPanel; check Mac.WindowClass/PanelPreferences")
+	default:
+		bootProbeApp("reinforcePanelWithRetry: main window not found within 3s")
+		a.log.Warn("reinforce panel: main window not found within 3s")
+	}
 }
 
 // applyTaskbarIconWithRetry 在启动阶段应用任务栏/Dock 显隐设置。
@@ -1098,9 +1158,9 @@ func (a *App) pasteClipboardToFrontWithWriter(probeTag string, writeFn func() er
 	prevValid := prev.IsValid()
 
 	if runtime.GOOS == "darwin" {
-		if a.ctx != nil && a.isVisible() {
+		if a.uiReady() && a.isVisible() {
 			a.saveWindowPosition()
-			window.HideMain(a.ctx)
+			window.HideMain(a.mainWindow())
 			a.setVisible(false)
 		}
 		time.Sleep(80 * time.Millisecond)
@@ -1121,10 +1181,10 @@ func (a *App) pasteClipboardToFrontWithWriter(probeTag string, writeFn func() er
 				bootProbeApp("paste(writer): focus restored")
 			}
 		}
-		if a.ctx != nil && a.isVisible() {
+		if a.uiReady() && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("paste(writer): before WindowHide")
-			wailsruntime.WindowHide(a.ctx)
+			window.HideMain(a.mainWindow())
 			bootProbeApp("paste(writer): after WindowHide")
 			a.setVisible(false)
 		} else {
@@ -1202,10 +1262,10 @@ func (a *App) pasteClipboardToFront(probeTag string) error {
 		//
 		//     流程：orderOut → 120ms sleep → osascript Cmd+V。不需要 resign、
 		//     不需要异步再 hide、不需要追踪 prevFocus。
-		if a.ctx != nil && a.isVisible() {
+		if a.uiReady() && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("PasteItem: before HideMain (mac/panel)")
-		window.HideMain(a.ctx)
+		window.HideMain(a.mainWindow())
 		a.setVisible(false)
 		bootProbeApp("PasteItem: after HideMain (mac/panel)")
 		} else {
@@ -1220,10 +1280,10 @@ func (a *App) pasteClipboardToFront(probeTag string) error {
 		// Windows / Linux：WindowHide 后焦点不会自动回到上一个窗口，
 		// 必须显式 SetForegroundWindow / xdotool activate，否则
 		// Shift+Insert（Windows）/ Ctrl+V（Linux）发到桌面，永远粘不出来。
-		if a.ctx != nil && a.isVisible() {
+		if a.uiReady() && a.isVisible() {
 			a.saveWindowPosition()
 			bootProbeApp("PasteItem: before WindowHide")
-		wailsruntime.WindowHide(a.ctx)
+		window.HideMain(a.mainWindow())
 		bootProbeApp("PasteItem: after WindowHide")
 		a.setVisible(false)
 		} else {
@@ -1302,9 +1362,9 @@ func (a *App) ClearHistory() error {
 
 // HideWindow 隐藏窗口。
 func (a *App) HideWindow() {
-	if a.ctx != nil {
+	if a.uiReady() {
 		a.saveWindowPosition()
-		window.HideMain(a.ctx)
+		window.HideMain(a.mainWindow())
 		a.setVisible(false)
 	}
 }
@@ -1324,10 +1384,10 @@ func (a *App) QuitApp() {
 //
 // 这里只负责把事件 emit 给前端，toast 样式在 App.vue 中处理。
 func (a *App) onCmdQIntercepted(reason string) {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
-	wailsruntime.EventsEmit(a.ctx, "cmdq:intercepted", reason)
+	a.emit("cmdq:intercepted", reason)
 }
 
 // applyCmdQGlobalTap 按当前策略启用/停用 L0 全局 Cmd+Q 拦截（CGEventTap）。
@@ -1385,8 +1445,8 @@ func (a *App) applyCmdQGlobalTap(b extensions.CmdQBehavior) {
 func (a *App) guideCmdQTapPermissionOnce(reason string) {
 	a.cmdQTapPermGuideOnce.Do(func() {
 		extensions.OpenInputMonitoringPrefs()
-		if a.ctx != nil {
-			wailsruntime.EventsEmit(a.ctx, "cmdq:tap-auth-needed", reason)
+		if a.uiReady() {
+			a.emit("cmdq:tap-auth-needed", reason)
 		}
 	})
 }
@@ -1496,7 +1556,7 @@ func (a *App) ExportData() (string, error) {
 // macOS：用原生 NSSavePanel（原子执行激活+弹框+恢复，避免 NonactivatingPanel 问题）。
 // 其他平台：用 Wails SaveFileDialog。
 func (a *App) ExportDataToFile() (string, error) {
-	if a.repo == nil || a.ctx == nil {
+	if a.repo == nil || !a.uiReady() {
 		return "", fmt.Errorf("not ready")
 	}
 	data, err := a.ExportData()
@@ -1505,23 +1565,13 @@ func (a *App) ExportDataToFile() (string, error) {
 	}
 
 	defaultName := fmt.Sprintf("GoPaste-export-%d.json", time.Now().UnixMilli())
-	var savePath string
-
-	if runtime.GOOS == "darwin" {
-		// macOS：原生 NSSavePanel，在主线程原子执行激活→弹框→恢复
-		savePath = window.SaveFileDialog("导出剪切板记录", defaultName)
-	} else {
-		savePath, err = wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
-			Title:           "导出剪切板记录",
-			DefaultFilename: defaultName,
-			Filters: []wailsruntime.FileFilter{
-				{DisplayName: "JSON 文件", Pattern: "*.json"},
-				{DisplayName: "所有文件", Pattern: "*.*"},
-			},
-		})
-		if err != nil {
-			return "", err
-		}
+	// macOS 走原生 NSSavePanel（激活→弹框→恢复），其他平台走 v3 SaveFile，见 saveFileDialog。
+	savePath, err := a.saveFileDialog("导出剪切板记录", defaultName, "json", []fileFilter{
+		{DisplayName: "JSON 文件", Pattern: "*.json"},
+		{DisplayName: "所有文件", Pattern: "*.*"},
+	})
+	if err != nil {
+		return "", err
 	}
 
 	if savePath == "" {
@@ -1543,7 +1593,7 @@ func (a *App) ExportDataToFile() (string, error) {
 //
 // 返回保存的文件路径；用户取消时返回空字符串。
 func (a *App) ExportDiagnostics() (string, error) {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return "", fmt.Errorf("not ready")
 	}
 
@@ -1644,24 +1694,14 @@ func (a *App) ExportDiagnostics() (string, error) {
 
 	// --- 5. 弹出保存对话框 ---
 	defaultName := fmt.Sprintf("GoPaste-diag-%s.zip", time.Now().Format("20060102-150405"))
-	var (
-		savePath string
-		err      error
-	)
-	if runtime.GOOS == "darwin" {
-		savePath = window.SaveFileDialog("导出诊断包", defaultName)
-	} else {
-		savePath, err = wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
-			Title:           "导出诊断包",
-			DefaultFilename: defaultName,
-			Filters: []wailsruntime.FileFilter{
-				{DisplayName: "ZIP 压缩包", Pattern: "*.zip"},
-				{DisplayName: "所有文件", Pattern: "*.*"},
-			},
-		})
-		if err != nil {
-			return "", err
-		}
+	// macOS 的原生对话框这里按 zip 限制类型（v2 时代 mac 的 NSSavePanel 写死了 JSON，
+	// 导致诊断包在 mac 上只能以 .json 后缀保存）。
+	savePath, err := a.saveFileDialog("导出诊断包", defaultName, "zip", []fileFilter{
+		{DisplayName: "ZIP 压缩包", Pattern: "*.zip"},
+		{DisplayName: "所有文件", Pattern: "*.*"},
+	})
+	if err != nil {
+		return "", err
 	}
 
 	if savePath == "" {
@@ -1681,8 +1721,25 @@ func (a *App) DataDir() string {
 	return a.paths.Root
 }
 
+// GetThumbnail 返回列表用的缩略图（base64 PNG，长边 ≤256px）。
+// 图片条目和"单个图片文件"的文件条目有效，其它类型返回空字符串。
+// 详情预览需要原图时用 GetContent / GetFileThumbnail。
+func (a *App) GetThumbnail(id int64) (string, error) {
+	if a.repo == nil {
+		return "", fmt.Errorf("storage not ready")
+	}
+	b, err := a.repo.GetThumbnail(id)
+	if err != nil {
+		return "", err
+	}
+	if len(b) == 0 {
+		return "", nil
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
 // GetFileThumbnail 读取文件路径（从文件类型条目的 Content 中），
-// 如果是图片文件则返回 base64 编码的内容，否则返回空字符串。
+// 如果是图片文件则返回 base64 编码的原图内容，否则返回空字符串（用于详情预览）。
 func (a *App) GetFileThumbnail(id int64) (string, error) {
 	if a.repo == nil {
 		return "", fmt.Errorf("storage not ready")
@@ -1732,14 +1789,11 @@ func (a *App) openDataDir() {
 
 // showAbout 弹出关于对话框。
 func (a *App) showAbout() {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
-	_, _ = wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
-		Type:    wailsruntime.InfoDialog,
-		Title:   "关于 GoPaste",
-		Message: "GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。\n\n官网：" + config.Website,
-	})
+	a.infoDialog("关于 GoPaste",
+		"GoPaste · 跨平台剪切板管理工具\n\n基于 Wails + Go + Vue 3 构建。\n数据本地加密存储，永不上云。\n\n官网："+config.Website)
 }
 
 // showAccessibilityGuide 在 macOS 未授权辅助功能时弹框引导用户授权。
@@ -1754,7 +1808,7 @@ func (a *App) showAbout() {
 // 以及我们自己的 accessGuideOnce（应用层引导弹框），都只执行一次，避免
 // 用户每次按粘贴都被两层弹框轰炸。
 func (a *App) showAccessibilityGuide() {
-	if runtime.GOOS != "darwin" || a.ctx == nil {
+	if runtime.GOOS != "darwin" || !a.uiReady() {
 		return
 	}
 	a.accessGuideOnce.Do(func() {
@@ -1771,31 +1825,28 @@ func (a *App) showAccessibilityGuide() {
 		//
 		// 长期方案是上 Apple 开发者证书做正式签名（TeamID 稳定 = TCC 永远对得上），
 		// 但这不是一次对话能解决的事，先保证用户能用。
-		sel, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
-			Type:  wailsruntime.WarningDialog,
-			Title: "需要重新授权辅助功能",
-			Message: "GoPaste 需要「辅助功能」权限才能模拟 Cmd+V 完成自动粘贴。\n\n" +
-				"⚠️ 如果你已经在列表里勾选过 GoPaste，仍然看到此提示，\n" +
-				"这是因为 GoPaste 每次重新构建后签名会变化，系统之前保存的\n" +
-				"授权记录和当前版本对不上了。\n\n" +
-				"【解决方法】\n" +
-				"1. 点击下方「打开系统设置」\n" +
-				"2. 在「辅助功能」列表里找到 GoPaste，选中后点 −（减号）删除\n" +
-				"3. 回到 GoPaste 再按一次粘贴，系统会重新弹框请求授权\n" +
+		const btnOpen, btnLater = "打开系统设置", "稍后"
+		sel, err := a.warningDialog(a.ctx, "需要重新授权辅助功能",
+			"GoPaste 需要「辅助功能」权限才能模拟 Cmd+V 完成自动粘贴。\n\n"+
+				"⚠️ 如果你已经在列表里勾选过 GoPaste，仍然看到此提示，\n"+
+				"这是因为 GoPaste 每次重新构建后签名会变化，系统之前保存的\n"+
+				"授权记录和当前版本对不上了。\n\n"+
+				"【解决方法】\n"+
+				"1. 点击下方「打开系统设置」\n"+
+				"2. 在「辅助功能」列表里找到 GoPaste，选中后点 −（减号）删除\n"+
+				"3. 回到 GoPaste 再按一次粘贴，系统会重新弹框请求授权\n"+
 				"4. 这次勾选后即可正常使用（直到下次重新构建）",
-			Buttons:       []string{"打开系统设置", "稍后"},
-			DefaultButton: "打开系统设置",
-			CancelButton:  "稍后",
-		})
+			[]string{btnOpen, btnLater}, btnOpen, btnLater)
 		if err != nil {
 			a.log.Warn("accessibility guide: dialog err", "err", err)
 			return
 		}
-		if sel == "打开系统设置" {
+		if sel == btnOpen {
 			// x-apple.systempreferences URL scheme 直达"辅助功能"面板。
 			// 适用 macOS 13+（Ventura 起）和旧版的 Security & Privacy。
-			wailsruntime.BrowserOpenURL(a.ctx,
-				"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+			if err := a.openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"); err != nil {
+				a.log.Warn("accessibility guide: open prefs", "err", err)
+			}
 		}
 	})
 }
@@ -1815,8 +1866,8 @@ func (a *App) RequestPastePermission() bool {
 
 // quitApp 托盘点击"退出"时调用：走正常的 Wails 关闭流程，若一段时间内未退出则强制 os.Exit。
 func (a *App) quitApp() {
-	if a.ctx != nil {
-		go wailsruntime.Quit(a.ctx)
+	if a.uiReady() {
+		go a.quitRuntime()
 	}
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
@@ -1860,9 +1911,9 @@ func (a *App) RevealInExplorer(path string) error {
 }
 
 // OpenURL 使用系统默认浏览器打开 URL。
-// 直接调用 Wails runtime 的 BrowserOpenURL，屏蔽平台差异。
+// 经 app_runtime.go 的 openURL：先做与 v2 相同的 URL 安全校验，再交给系统打开。
 func (a *App) OpenURL(url string) error {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return fmt.Errorf("not ready")
 	}
 	url = strings.TrimSpace(url)
@@ -1873,25 +1924,30 @@ func (a *App) OpenURL(url string) error {
 	if !strings.Contains(url, "://") {
 		url = "https://" + url
 	}
-	wailsruntime.BrowserOpenURL(a.ctx, url)
+	// 与 v2 一致：校验失败 / 打开失败只记日志，不把错误抛给前端（前端不会弹错误框）。
+	if err := a.openURL(url); err != nil {
+		a.log.Warn("open url", "err", err)
+	}
 	return nil
 }
 
 // openSettings 托盘菜单"打开设置"回调：显示主窗口并切换到设置页。
 func (a *App) openSettings() {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
 	a.showPanel()
-	wailsruntime.EventsEmit(a.ctx, "view:settings")
+	a.emit("view:settings")
 }
 
 // openWebsite 托盘菜单"打开官网"回调。
 func (a *App) openWebsite() {
-	if a.ctx == nil {
+	if !a.uiReady() {
 		return
 	}
-	wailsruntime.BrowserOpenURL(a.ctx, config.Website)
+	if err := a.openURL(config.Website); err != nil {
+		a.log.Warn("open website", "err", err)
+	}
 }
 
 // GetAppVersion 返回当前应用版本（semver 字符串，形如 "0.1.0"）。
@@ -1909,7 +1965,7 @@ func (a *App) GetWebsite() string {
 // 并引导用户点击 ReleaseURL 跳转下载。检测失败（无网络等）返回空结果而非错误，
 // 避免弹错误弹窗；真实错误记录到日志。
 func (a *App) CheckForUpdate() updater.Result {
-	if a.ctx == nil {
+	if a.ctx == nil { // 这里需要的是 ctx 本身（随应用退出取消），不是 UI 就绪
 		return updater.Result{CurrentVersion: updater.Version}
 	}
 	res, err := updater.Check(a.ctx, updater.Version)
@@ -1922,7 +1978,7 @@ func (a *App) CheckForUpdate() updater.Result {
 
 // SaveImageToFile 将图片内容保存到用户选择的位置（通过系统保存对话框）。
 func (a *App) SaveImageToFile(id int64) (string, error) {
-	if a.repo == nil || a.ctx == nil {
+	if a.repo == nil || !a.uiReady() {
 		return "", fmt.Errorf("not ready")
 	}
 	t, content, err := a.repo.GetItemWithContent(id)
@@ -1933,13 +1989,12 @@ func (a *App) SaveImageToFile(id int64) (string, error) {
 		return "", fmt.Errorf("not an image")
 	}
 
-	savePath, err := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
-		Title:           "保存图片",
-		DefaultFilename: fmt.Sprintf("gopaste_%d.png", id),
-		Filters: []wailsruntime.FileFilter{
-			{DisplayName: "PNG 图片", Pattern: "*.png"},
-			{DisplayName: "所有文件", Pattern: "*.*"},
-		},
+	// v2 时代这里在 macOS 上也走框架对话框，与 CLAUDE.md §3.4"NonactivatingPanel 下
+	// 系统对话框必须走原生 window.SaveFileDialog"的约定不一致；v3 下统一经
+	// saveFileDialog，macOS 自动走原生 NSSavePanel。
+	savePath, err := a.saveFileDialog("保存图片", fmt.Sprintf("gopaste_%d.png", id), "png", []fileFilter{
+		{DisplayName: "PNG 图片", Pattern: "*.png"},
+		{DisplayName: "所有文件", Pattern: "*.*"},
 	})
 	if err != nil {
 		return "", err

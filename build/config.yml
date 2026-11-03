@@ -1,0 +1,55 @@
+# GoPaste 的 Wails v3 构建配置。
+#
+# 版本号：唯一权威仍是 /wails.json 的 info.productVersion（Makefile / CI / Taskfile 均从那里读）。
+# 这里的 info.version 只用于生成 Info.plist / info.json / NSIS 等静态资源，
+# 发版改版本号后请执行 `task common:update:build-assets` 同步（会覆盖 build/ 下的生成资源）。
+#
+# productIdentifier 必须保持 com.larkwins.gopaste：macOS 的辅助功能授权（TCC）按 bundle id 记录，
+# 改了用户需要重新授权。
+version: '3'
+
+info:
+  companyName: "larkwins"
+  productName: "GoPaste"
+  productIdentifier: "com.larkwins.gopaste"
+  description: "跨平台剪切板管理工具"
+  copyright: "Copyright © 2026 larkwins"
+  comments: "跨平台剪切板管理工具"
+  version: "0.7.1"
+
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir:
+      - .git
+      - node_modules
+      - frontend
+      - bin
+      - build
+      - docs
+      - scripts
+      - changelog
+    file:
+      - .DS_Store
+      - .gitignore
+      - .gitkeep
+      - "*_test.go"
+    watched_extension:
+      - "*.go"
+      - "*.m"
+    git_ignore: true
+  executes:
+    - cmd: wails3 build DEV=true
+      type: blocking
+    - cmd: wails3 task common:dev:frontend
+      type: background
+    - cmd: wails3 task run
+      type: primary
+      exit_policy: shutdown
+
+fileAssociations:
+
+other:
+  - name: GoPaste

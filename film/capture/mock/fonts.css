@@ -1,0 +1,15 @@
+/* 渲染机无 PingFang / 雅黑：统一换成开源同类字体，保证中文不出现方块，且与成片字体一致。 */
+@import '@fontsource/noto-sans-sc/400.css';
+@import '@fontsource/noto-sans-sc/500.css';
+@import '@fontsource/noto-sans-sc/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+
+html, body, .app, input, button, textarea, select {
+  font-family: 'Noto Sans SC', sans-serif !important;
+}
+pre, code, .hljs, .code-hl, [class*='mono'] {
+  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace !important;
+}
+/* 采集时隐藏滚动条与光标闪烁，避免纹理里出现与镜头无关的系统控件 */
+::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
+input { caret-color: transparent; }

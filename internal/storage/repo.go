@@ -22,7 +22,7 @@ import (
 // Repo 剪切板条目仓储。
 //
 // 所有写入的 Content 会通过 cipher 加密；读取时解密。
-// Preview 保持明文以支持 SQL LIKE 搜索。图片内容落盘到 imageDir 下 `<hash>.png`，DB 只存路径。
+// Preview 保持明文以支持 SQL LIKE 搜索。图片内容落盘到 imageDir 下 `<hash>.png`（缩略图 `<hash>.thumb.png`），DB 只存路径。
 type Repo struct {
 	db       *gorm.DB
 	cipher   *crypto.Cipher
@@ -91,6 +91,8 @@ func (r *Repo) Save(item *types.Item) error {
 		}
 		item.ImagePath = fp
 		item.Content = nil // 不再持久化到 DB
+		// 预热列表缩略图：异步生成，失败不影响入库（读取时会懒生成兜底）。
+		go func() { _, _ = r.ensureImageThumb(fp) }()
 	} else if r.cipher != nil && len(item.Content) > 0 {
 		enc, err := r.cipher.Encrypt(item.Content)
 		if err != nil {
@@ -182,9 +184,7 @@ func (r *Repo) Delete(id int64) error {
 	if err := r.db.First(&item, id).Error; err != nil {
 		return err
 	}
-	if item.ImagePath != "" {
-		_ = os.Remove(item.ImagePath)
-	}
+	r.removeItemFiles(item)
 	return r.db.Delete(&types.Item{}, id).Error
 }
 
@@ -195,9 +195,7 @@ func (r *Repo) Clear() error {
 		return err
 	}
 	for _, it := range list {
-		if it.ImagePath != "" {
-			_ = os.Remove(it.ImagePath)
-		}
+		r.removeItemFiles(it)
 	}
 	return r.db.Where("pinned = ? AND favorite = ?", false, false).Delete(&types.Item{}).Error
 }
@@ -237,9 +235,7 @@ func (r *Repo) Prune(maxItems int, maxDays int) (deleted int64, err error) {
 			continue
 		}
 		seen[it.ID] = true
-		if it.ImagePath != "" {
-			_ = os.Remove(it.ImagePath)
-		}
+		r.removeItemFiles(it)
 		ids = append(ids, it.ID)
 	}
 	if len(ids) == 0 {

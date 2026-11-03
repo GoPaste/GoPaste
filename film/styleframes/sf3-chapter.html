@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+  /* 章节结构沿用 bottom-push-stack-wipe demo：左栏 120px 起排，眉题 → 超粗两行标题 → 说明；右栏 UI 卡钉在章内坐标 */
+  .chapter { position: absolute; inset: 0; overflow: hidden; }
+  .light { position: absolute; inset: 0; }
+  .eyebrow { position: absolute; left: 120px; top: 168px; display: flex; align-items: center; gap: 20px; }
+  .eyebrow .num { height: 48px; padding: 0 18px; border-radius: 24px; display: flex; align-items: center; font: 700 26px var(--mono); }
+  .eyebrow .name { font: 700 30px var(--sans); letter-spacing: .14em; }
+  .title { position: absolute; left: 114px; top: 270px; font: 900 112px/1.12 var(--sans); letter-spacing: -0.02em; white-space: pre; }
+  .sub { position: absolute; left: 120px; top: 560px; width: 640px; font: 500 34px/1.5 var(--sans); }
+  .foot { position: absolute; left: 120px; bottom: 96px; display: flex; align-items: center; gap: 14px; }
+  .foot .wordmark { font-size: 30px; }
+  .ticks { display: flex; gap: 10px; margin-left: 30px; }
+  .ticks i { display: block; height: 8px; border-radius: 4px; width: 28px; opacity: .28; }
+  .ticks i.on { width: 64px; opacity: .95; }
+  .seam { position: absolute; left: 0; right: 0; height: 56px; }
+  .label { position: absolute; right: 60px; bottom: 44px; font: 500 20px var(--mono); letter-spacing: .12em; opacity: .55; }
+</style></head>
+<body><div class="stage">
+  <!-- 章 1 · 品牌蓝：hold 状态 -->
+  <div class="chapter" style="background: linear-gradient(176deg, var(--brand-hi) 0%, var(--brand) 44%, var(--brand-lo) 100%); color:#fff;">
+    <div class="light" style="background: radial-gradient(ellipse 62% 70% at 18% 6%, rgba(255,255,255,.2) 0%, rgba(255,255,255,0) 70%), radial-gradient(ellipse 70% 70% at 100% 100%, rgba(6,42,115,.35) 0%, rgba(6,42,115,0) 70%);"></div>
+    <div class="eyebrow">
+      <div class="num" style="box-shadow: inset 0 0 0 2px rgba(255,255,255,.5)">01</div>
+      <div class="name">找得到</div>
+    </div>
+    <div class="title">复制过的，
+都找得到。</div>
+    <div class="sub" style="color: rgba(255,255,255,.82); width: 720px;">文本、图片、链接、代码、文件全自动记录<br>输入关键字，即刻命中</div>
+    <div class="foot">
+      <div class="wordmark" style="color:#fff"><img src="../../build/appicon.png">GoPaste</div>
+      <div class="ticks"><i class="on" style="background:#fff"></i><i style="background:#fff"></i><i style="background:#fff"></i></div>
+    </div>
+    <div class="panel" style="right:120px; top:150px; width:780px; height:780px; background-image:url(../public/textures/panel/panel-dark-search.png);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.14), inset 0 1px 0 rgba(255,255,255,.08), 0 40px 80px rgba(6,42,115,.55), 0 14px 30px rgba(6,42,115,.45);"></div>
+  </div>
+  <!-- 下一章（黄）上缘刚露头：展示"顶出"接缝的物性 -->
+  <div class="chapter" style="top: 1004px; background: linear-gradient(176deg, var(--amber-hi) 0%, var(--amber) 44%, var(--amber-lo) 100%);">
+    <div style="position:absolute; top:0; left:0; right:0; height:2px; background: rgba(255,255,255,.55)"></div>
+  </div>
+  <div class="seam" style="top: 948px; background: linear-gradient(to top, rgba(107,67,0,.42), rgba(107,67,0,.12) 40%, rgba(107,67,0,0));"></div>
+  <div class="label" style="color:#1a1406">SF-03 · 章 1 · bottom-push-stack-wipe（下一章推入第 3f）</div>
+  <div class="grain"></div>
+</div></body></html>

@@ -12,7 +12,7 @@ import {
   GetWebsite,
   CheckForUpdate,
   OpenURL,
-} from '../../wailsjs/go/main/App'
+} from '../../bindings/gopaste/app'
 import {
   Settings as SettingsIcon, Keyboard, ClipboardList,
   Download, Trash2, Info, Database, X, AlertTriangle,

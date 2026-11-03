@@ -4,71 +4,32 @@ package window
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework Cocoa -framework UniformTypeIdentifiers
+#cgo LDFLAGS: -framework Cocoa -framework UniformTypeIdentifiers -framework WebKit
 
 #include <stdlib.h>   // for free()
 
-extern void GoPasteConvertToNonactivatingPanel(const char *title);
-extern void GoPasteOrderOut(const char *title);
-extern void GoPasteOrderFront(const char *title);
-extern void GoPasteResignKey(const char *title);
-extern int GoPasteIsWindowKey(const char *title);
+extern int GoPasteConfigurePanel(const char *title);
 extern void GoPasteActivateForDialog(void);
 extern void GoPasteDeactivateAfterDialog(void);
-extern char *GoPasteSaveFileDialog(const char *title, const char *defaultName);
+extern char *GoPasteSaveFileDialog(const char *title, const char *defaultName, const char *allowedExt);
 */
 import "C"
 
 import "unsafe"
 
-// ConvertToNonactivatingPanel 把 title 指定的 NSWindow 改造成
-// NSPanel + NSWindowStyleMaskNonactivatingPanel。调用一次即可，内部幂等。
-//
-// 必须在 Wails 窗口已创建之后调用（OnStartup 里就已经可以拿到）。
-// 见 panel_darwin.m 顶部注释了解为什么要这么做。
-func ConvertToNonactivatingPanel(title string) {
+// ConfigurePanel 做主面板的一次性外观配置：隐藏红绿灯，并禁止 AppKit 的
+// “按住窗口背景拖动”（窗口拖动由前端 drag-region 负责）。
+// 幂等，可在启动阶段重试。返回窗口状态，供调用方写诊断日志。
+func ConfigurePanel(title string) PanelStatus {
 	ct := C.CString(title)
 	defer C.free(unsafe.Pointer(ct))
-	C.GoPasteConvertToNonactivatingPanel(ct)
+	return PanelStatus(C.GoPasteConfigurePanel(ct))
 }
 
-// OrderOut 以面板化的方式隐藏主窗口（orderOut:）。
-// 与 Wails 的 WindowHide 不同：不触发 [NSApp hide] / applicationShould…
-// 回调，也不影响当前 active app。NonactivatingPanel 必须用这个。
-func OrderOut(title string) {
-	ct := C.CString(title)
-	defer C.free(unsafe.Pointer(ct))
-	C.GoPasteOrderOut(ct)
-}
-
-// OrderFront 以面板化的方式显示主窗口（orderFrontRegardless + makeKeyWindow）。
-// 不会调 activateIgnoringOtherApps:，所以下层 app 的 active 状态不受影响。
-func OrderFront(title string) {
-	ct := C.CString(title)
-	defer C.free(unsafe.Pointer(ct))
-	C.GoPasteOrderFront(ct)
-}
-
-// ResignKey 让面板交还键盘输入给下面的 active app。粘贴前调用，
-// 使 Cmd+V 能被目标应用收到。
-func ResignKey(title string) {
-	ct := C.CString(title)
-	defer C.free(unsafe.Pointer(ct))
-	C.GoPasteResignKey(ct)
-}
-
-// IsWindowKey 检查指定 title 的窗口当前是否是 keyWindow。
-// 若返回 true，说明用户正在与 GoPaste 面板交互，
-// 此时全局热键不应再触发（避免与前端输入法组合冲突）。
-func IsWindowKey(title string) bool {
-	ct := C.CString(title)
-	defer C.free(unsafe.Pointer(ct))
-	return C.GoPasteIsWindowKey(ct) != 0
-}
-
-// ActivateForDialog 在弹出系统对话框（SaveFileDialog 等）前调用。
-// NonactivatingPanel 不是 active app，系统对话框需要 active app 才能正常显示。
-// 临时调用 activateIgnoringOtherApps: 让 GoPaste 成为前台应用。
+// ActivateForDialog 在弹出系统对话框（NSAlert / NSSavePanel 等）前调用。
+// NonactivatingPanel 不是 active app，系统对话框需要 active app 才能正常显示并接收输入。
+// 调用方必须在对话框结束后调用 DeactivateAfterDialog，否则应用会一直保持 active，
+// 破坏“面板不抢前台”的前提。
 func ActivateForDialog() {
 	C.GoPasteActivateForDialog()
 }
@@ -78,17 +39,25 @@ func DeactivateAfterDialog() {
 	C.GoPasteDeactivateAfterDialog()
 }
 
-// SaveFileDialog 在主线程原子执行"激活 → NSSavePanel → 恢复"。
+// SaveFileDialog 在主线程原子执行“激活 → NSSavePanel → 恢复”。
+// ext 为不带点的扩展名（"json" / "zip" / "png"），空字符串表示不限制类型。
 // 返回用户选择的路径，取消返回空字符串。
-func SaveFileDialog(title, defaultName string) string {
+func SaveFileDialog(title, defaultName, ext string) string {
 	ct := C.CString(title)
 	cn := C.CString(defaultName)
+	ce := C.CString(ext)
 	defer C.free(unsafe.Pointer(ct))
 	defer C.free(unsafe.Pointer(cn))
-	result := C.GoPasteSaveFileDialog(ct, cn)
+	defer C.free(unsafe.Pointer(ce))
+	result := C.GoPasteSaveFileDialog(ct, cn, ce)
 	if result == nil {
 		return ""
 	}
 	defer C.free(unsafe.Pointer(result))
 	return C.GoString(result)
 }
+
+// HasNativeSaveDialog 报告当前平台是否必须用本包的原生保存对话框。
+// macOS 上 NonactivatingPanel 不是 active app，v3 的 SaveFile 不会先激活应用，
+// 对话框可能弹不出来或无法输入，所以统一走 SaveFileDialog。
+func HasNativeSaveDialog() bool { return true }

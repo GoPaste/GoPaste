@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, type Ref, watch } from 'vue'
 import hljs from 'highlight.js/lib/common'
 // 默认使用 github-dark（与深色背景匹配）；浅色模式下在 CSS 里作用域覆盖为 GitHub 浅色调色板。
 // 原先用的 github.css 是浅色主题，在深色背景上字符串等 token 几乎不可见。
@@ -20,11 +20,16 @@ import {
   RevealInExplorer,
   SaveImageToFile,
   GetFileThumbnail,
+  GetThumbnail,
   SetNote,
   OpenURL,
-} from '../wailsjs/go/main/App'
-import { EventsOn, EventsOff, WindowSetAlwaysOnTop } from '../wailsjs/runtime/runtime'
-import type { types } from '../wailsjs/go/models'
+  SetIsComposing,
+  Heartbeat,
+} from '../bindings/gopaste/app'
+// Wails v3：运行时 API 从 @wailsio/runtime 导入（v2 时代是 ../wailsjs/runtime/runtime）。
+// 事件回调收到的是 WailsEvent 对象，载荷在 ev.data。
+import { Events, Window as WailsWindow } from '@wailsio/runtime'
+import type * as types from '../bindings/gopaste/internal/types/models'
 import Settings from './views/Settings.vue'
 import EmojiPicker from './views/EmojiPicker.vue'
 import {
@@ -98,6 +103,17 @@ const emojiKeyword = ref('')
 const typeFilter = ref<ItemType>('')
 const favoriteOnly = ref(false)
 const selectedIdx = ref(-1)
+// selectedIdx 是否只是"唤起时自动高亮第一条"产生的（便于直接回车粘贴），
+// 而非用户主动用方向键/鼠标选中。区分二者很关键：ESC 的语义是"没有用户主动
+// 选择就关窗"，否则每次唤起（onWindowShow 会把 selectedIdx 设为 0）都要
+// 按两次 ESC——第一次只是把自动高亮清掉，第二次才关窗（Windows 上必现）。
+// 任何用户主动改变选中位置的地方都要把它置为 false。
+const autoHighlight = ref(false)
+// 最近一次"按 ESC 关窗"的时间戳。用于消除竞态：onWindowShow 是 async
+// （await GetSettings），若用户在这期间按了 ESC 关窗，随后 onWindowShow
+// 再执行 selectedIdx = 0 会把"已关窗"的面板重新标上选中，表现为
+// "第一次 ESC 没反应"。800ms 覆盖 show 事件的 RPC 往返。
+let escHideAt = 0
 // Ctrl/Meta 键状态跟踪（用于窗口失焦时重置）
 const ctrlPressed = ref(false)
 const detailContent = ref<string>('')
@@ -108,16 +124,105 @@ const detailType = ref<string>('')
 const detailItem = ref<Item | null>(null)
 const loading = ref(false)
 
-// 分页
-const PAGE_SIZE = 20
+// ================= 内存与缓存策略（阈值集中在此）=================
+// 调整内存/缓存行为时只改这一块，理由见 docs/thumbnail-optimization.md。
+// 本应用是常驻进程（Windows/macOS 都是隐藏而非退出），所有"能增长的东西"
+// 都必须有上限或延迟回收。
+const PAGE_SIZE = 20 // 每页条数
+// 列表（含 DOM 卡片）常驻上限。滚动加载会不断把历史条目堆进 items 与 DOM，
+// 而 Prune 上限是 1000 条——全量渲染会让卡片数与内存线性增长。达到上限后
+// 停止自动加载并提示用搜索定位更早记录。
+// 选择"停止加载"而非"裁剪前面页"：裁剪会让 scrollTop 指向的内容整体位移，
+// 用户正在滚动时会出现跳变。
+const MAX_ITEMS_IN_MEMORY = 300
+// 缩略图缓存 LRU 上限（imageThumbs + fileThumbs 合计）。滚动加载时只增不减，
+// 必须有上限。
+const THUMB_CACHE_LIMIT = 60
+// 主窗口隐藏后"空闲多久"才真正释放缩略图缓存。
+// 不选择"每次隐藏立即清空"：复制 → 唤起 → 粘贴 → 自动隐藏是高频循环，
+// 每次都清空意味着下一次唤起要把可见的缩略图全部重新拉一遍（IPC + base64 +
+// 解码），首屏会看到图片逐个补位。已有 LRU 上限兜底，真正要回收的是
+// "隐藏后长时间没人用"的驻留场景。
+const THUMB_CACHE_IDLE_MS = 5 * 60 * 1000
+// Emoji 视图：进入时挂载防抖（避免快速 off→on 反复 mount/unmount）；
+// 离开后空闲多久卸载（隐藏时 opacity:0 常驻合成层会让页面 + GPU 多占约 250MB）。
+const EMOJI_MOUNT_DEBOUNCE_MS = 300
+const EMOJI_UNMOUNT_IDLE_MS = 30_000
+// ================================================================
+
 const page = ref(1)
-const hasMore = computed(() => items.value.length < total.value)
+const reachedItemCap = computed(() => items.value.length >= MAX_ITEMS_IN_MEMORY)
+const hasMore = computed(() => !reachedItemCap.value && items.value.length < total.value)
 const loadingMore = ref(false)
 
 // 图片缩略图缓存
 const imageThumbs = ref<Record<number, string>>({})
 // 文件类型的图片缩略图缓存
 const fileThumbs = ref<Record<number, string>>({})
+
+// ---- 缩略图缓存控制（docs/thumbnail-optimization.md 方案 B）----
+// LRU 访问顺序（末尾 = 最近使用）。不能依赖对象自身的键顺序：JS 对象对
+// 整数键按数值升序枚举，插入顺序不可靠，无法直接当 LRU 用。
+const thumbLRU: number[] = []
+
+function touchThumbLRU(id: number) {
+  const i = thumbLRU.indexOf(id)
+  if (i !== -1) thumbLRU.splice(i, 1)
+  thumbLRU.push(id)
+}
+
+function trimThumbLRU() {
+  while (thumbLRU.length > THUMB_CACHE_LIMIT) {
+    const oldest = thumbLRU.shift()
+    if (oldest === undefined) break
+    delete imageThumbs.value[oldest]
+    delete fileThumbs.value[oldest]
+  }
+}
+
+function setThumb(store: Ref<Record<number, string>>, id: number, value: string) {
+  store.value[id] = value
+  touchThumbLRU(id)
+  trimThumbLRU()
+}
+
+// 条目被删除时同步清掉缓存与 LRU 记录
+function dropThumb(id: number) {
+  const i = thumbLRU.indexOf(id)
+  if (i !== -1) thumbLRU.splice(i, 1)
+  delete imageThumbs.value[id]
+  delete fileThumbs.value[id]
+}
+
+let thumbClearTimer: number | undefined
+
+function clearThumbCache() {
+  imageThumbs.value = {}
+  fileThumbs.value = {}
+  thumbLRU.length = 0
+}
+
+// 隐藏后延迟释放；期间再次唤起会被 onWindowShow 取消。
+function scheduleThumbClear() {
+  if (thumbClearTimer != null) return // 已在计时，不重置（保持"最后一次隐藏"起算）
+  thumbClearTimer = window.setTimeout(() => {
+    thumbClearTimer = undefined
+    clearThumbCache()
+  }, THUMB_CACHE_IDLE_MS)
+}
+
+function cancelThumbClear() {
+  if (thumbClearTimer == null) return
+  window.clearTimeout(thumbClearTimer)
+  thumbClearTimer = undefined
+}
+
+// 隐藏主窗口的统一出口：隐藏后安排一次延迟释放。
+// 所有前端主动隐藏的地方都走这里，避免漏掉某条隐藏路径导致缓存永不释放。
+function hideWindow() {
+  HideWindow()
+  scheduleThumbClear()
+}
 
 // 判断文件名是否为图片
 function isImageFile(name: string): boolean {
@@ -207,6 +312,7 @@ function onItemClick(idx: number, it: Item, e?: MouseEvent) {
   selectedIds.value = [it.id]
 
   selectedIdx.value = idx
+  autoHighlight.value = false
   if (pasteTrigger.value !== 'single') return
   if (singleClickTimer != null) window.clearTimeout(singleClickTimer)
   singleClickTimer = window.setTimeout(() => {
@@ -245,6 +351,7 @@ function onItemCtrlClick(idx: number, it: Item) {
     selectedIds.value = [...selectedIds.value, it.id]
   }
   selectedIdx.value = idx
+  autoHighlight.value = false
 }
 async function refresh(opts?: { silent?: boolean }) {
   // silent=true：切 filter / 切 keyword 等"原地替换"场景，不显示 loading 占位，
@@ -266,6 +373,12 @@ async function refresh(opts?: { silent?: boolean }) {
     total.value = r?.total || 0
     if (selectedIdx.value >= items.value.length) selectedIdx.value = -1
     loadThumbs(items.value)
+  } catch (err) {
+    // 容错：偶现的 RPC 失败（如启动早期 IPC 抖动、SQLite 短暂 busy）不应该
+    // 把异常抛给调用方——onMounted 里 await refresh() 一旦 reject，后续的
+    // clipboard:new 监听与心跳注册会全部跳过，列表从此永久空白（唤起后
+    // 也不会自愈）。失败时保留现有列表，等下一次事件再刷新。
+    console.warn('[gopaste] ListItems failed, keep current list:', err)
   } finally {
     if (!silent) loading.value = false
   }
@@ -344,6 +457,9 @@ async function loadMore() {
     items.value.push(...newItems)
     page.value = nextPage
     loadThumbs(newItems)
+  } catch (err) {
+    // 同 refresh：分页失败静默保留现状，避免未处理的 promise rejection
+    console.warn('[gopaste] loadMore failed:', err)
   } finally {
     loadingMore.value = false
   }
@@ -351,29 +467,32 @@ async function loadMore() {
 
 function loadThumbs(list: Item[]) {
   for (const it of list) {
-    if (it.type === 'image' && !imageThumbs.value[it.id]) {
-      loadThumb(it.id)
+    if (it.type === 'image') {
+      if (imageThumbs.value[it.id]) touchThumbLRU(it.id) // 命中即视为"最近使用"
+      else loadThumb(it.id)
     }
-    if (it.type === 'file' && !fileThumbs.value[it.id]) {
+    if (it.type === 'file') {
       const names = (it.preview || '').split('\n')
-      if (names.length === 1 && isImageFile(names[0])) {
-        loadFileThumb(it.id)
-      }
+      const singleImage = names.length === 1 && isImageFile(names[0])
+      if (!singleImage) continue
+      if (fileThumbs.value[it.id]) touchThumbLRU(it.id)
+      else loadFileThumb(it.id)
     }
   }
 }
 
 async function loadThumb(id: number) {
   try {
-    const b64 = await GetContent(id)
-    imageThumbs.value[id] = `data:image/png;base64,${b64}`
+    // 列表只用后端生成的小尺寸缩略图，原图仅在详情里加载
+    const b64 = await GetThumbnail(id)
+    if (b64) setThumb(imageThumbs, id, `data:image/png;base64,${b64}`)
   } catch { /* ignore */ }
 }
 
 async function loadFileThumb(id: number) {
   try {
-    const b64 = await GetFileThumbnail(id)
-    if (b64) fileThumbs.value[id] = `data:image/png;base64,${b64}`
+    const b64 = await GetThumbnail(id)
+    if (b64) setThumb(fileThumbs, id, `data:image/png;base64,${b64}`)
   } catch { /* ignore */ }
 }
 
@@ -477,9 +596,12 @@ const tabHotkeysEnabled = ref(true)
 // 通过 emojiMounted（防抖派生）控制实际挂载，避免快速反复 toggle 时
 // 反复触发 mount/unmount → 刚开始构建 tone 0 又被打断。
 const emojiEnabled = ref(true)
-const emojiMounted = ref(true)
+// 懒挂载：启动时不挂载。EmojiPicker 的 6 张精灵图集（每张解码后约 17MB）和
+// 隐藏时 opacity:0 常驻的合成层会让页面进程 + GPU 进程多占约 250MB，
+// 所以只在用户第一次进入 emoji 视图时才挂载，离开后空闲 EMOJI_UNMOUNT_IDLE_MS 再卸载。
+const emojiMounted = ref(false)
 let emojiMountDebounceTimer: number | null = null
-const EMOJI_MOUNT_DEBOUNCE_MS = 300
+let emojiUnmountTimer: number | null = null
 // 是否启用扩展 Emoji（显示物品/旗帜分类 + 肤色按钮）。设置变更时由 loadSettings 同步过来，
 // EmojiPicker 通过 prop 接收，决定 visibleCategories 是否过滤 objects/flags
 // 以及是否渲染肤色按钮。所有 sprite 资源都已是预打包 WebP，切换 prop 不
@@ -555,7 +677,7 @@ async function doDelete(it?: Item) {
   // 执行删除
   for (const item of itemsToDelete) {
     await DeleteItem(item.id)
-    delete imageThumbs.value[item.id]
+    dropThumb(item.id)
   }
 
   // 清除多选状态
@@ -641,6 +763,7 @@ function onItemContextMenu(e: MouseEvent, it: Item, idx: number) {
   if (isMac && e.ctrlKey) return
 
   selectedIdx.value = idx
+  autoHighlight.value = false
   // 普通右键：
   //   - 如果条目已在多选集合中，保持多选状态
   //   - 如果条目不在多选集合中，清除多选只选当前条目
@@ -661,6 +784,7 @@ function onItemContextMenuCtrl(e: MouseEvent, it: Item, idx: number) {
   const isMac = navigator.platform.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac')
   if (isMac && e.ctrlKey) return
   selectedIdx.value = idx
+  autoHighlight.value = false
   if (selectedIds.value.includes(it.id)) {
     selectedIds.value = selectedIds.value.filter(id => id !== it.id)
   } else {
@@ -747,7 +871,7 @@ provide('suppressBlurHide', { withSuppressBlur })
 
 function toggleAlwaysOnTop() {
   alwaysOnTop.value = !alwaysOnTop.value
-  WindowSetAlwaysOnTop(alwaysOnTop.value)
+  WailsWindow.SetAlwaysOnTop(alwaysOnTop.value).catch(() => {})
 }
 
 // 同步 WebView2 底层背景色：
@@ -769,9 +893,14 @@ function applyTheme(t: string) {
   syncWebViewBg()
 }
 
+// 最近一次成功拉取的设置缓存：GetSettings RPC 偶发失败时，
+// onWindowShow 等激活路径用它兜底，避免一次网络/IPC 抖动中断整个唤起逻辑。
+let lastSettings: any = null
+
 async function loadSettings() {
   try {
     const s: any = await GetSettings()
+    lastSettings = s
     applyTheme(s?.theme || 'dark')
     if (s?.language) lang.value = s.language as Lang
     pasteTrigger.value = (s?.pasteTrigger === 'single' ? 'single' : 'double')
@@ -802,10 +931,36 @@ watch(emojiEnabled, (v) => {
     emojiMounted.value = false
     return
   }
+  // 开启：只做防抖，不主动挂载；是否挂载由下面 watch(view) 按需决定。
   emojiMountDebounceTimer = window.setTimeout(() => {
     emojiMountDebounceTimer = null
-    if (emojiEnabled.value) emojiMounted.value = true
+    if (emojiEnabled.value && view.value === 'emoji') emojiMounted.value = true
   }, EMOJI_MOUNT_DEBOUNCE_MS)
+})
+
+// 进入 emoji 视图 → 立即挂载并取消待执行的卸载；
+// 离开 emoji 视图 → 空闲一段时间后卸载，释放精灵图集与合成层。
+watch(view, (v) => {
+  if (emojiUnmountTimer != null) {
+    window.clearTimeout(emojiUnmountTimer)
+    emojiUnmountTimer = null
+  }
+  if (v === 'emoji') {
+    if (emojiEnabled.value) emojiMounted.value = true
+    return
+  }
+  if (!emojiMounted.value) return
+  emojiUnmountTimer = window.setTimeout(() => {
+    emojiUnmountTimer = null
+    if (view.value !== 'emoji') emojiMounted.value = false
+  }, EMOJI_UNMOUNT_IDLE_MS)
+})
+
+// 详情关闭后释放原图（方案 B）：详情用的是 GetContent 取回的原图 base64
+// （可能数 MB），关闭后不再需要，置空让内存尽快回收。
+// 用 watch 覆盖所有关闭路径（ESC / 空格 toggle / 二次空格 / 点击关闭按钮）。
+watch(detailVisible, (v) => {
+  if (!v) detailContent.value = ''
 })
 
 // 窗口激活时：根据设置回到顶部 / 切换至全部分组
@@ -814,9 +969,18 @@ watch(emojiEnabled, (v) => {
 // 只有 HideWindow + ShowWindow 才会让 document 从 hidden 变 visible。
 // 这样拖窗口时不会误重置筛选/滚动位置。
 async function onWindowShow() {
+  // 唤起即取消"隐藏空闲后清缓存"的定时任务：高频唤起/隐藏时缓存保持命中。
+  cancelThumbClear()
   // 清空搜索栏对所有视图生效（主视图 + emoji 视图共用同一个搜索框），
   // 所以放在 view === 'main' 守卫之前。
-  const s: any = await GetSettings()
+  // GetSettings 失败时用缓存兜底而不是让整个激活流程中断。
+  let s: any = null
+  try {
+    s = await GetSettings()
+    lastSettings = s
+  } catch {
+    s = lastSettings
+  }
   let hadKeyword = false
   if (s?.clearSearchOnShow) {
     hadKeyword = keyword.value !== ''
@@ -838,6 +1002,18 @@ async function onWindowShow() {
     searchRef.value?.focus()
     return
   }
+  // 空列表自愈：正常情况下唤起时不重复拉列表（避免 loading 闪烁），但如果
+  // 当前是"暂无历史记录"空状态（典型成因：启动初期首次 refresh 偶发失败、
+  // 且当时 clipboard:new 监听尚未就绪导致后续复制都没刷新），这里强制补拉
+  // 一次，保证用户唤起时一定能看到数据。DB 真为空时多一次查询代价可忽略。
+  // 限定"无关键词 + 默认分组"：搜索无结果/收藏为空等合法空态不需要每次唤起重查。
+  if (view.value === 'main'
+    && !keyword.value
+    && !typeFilter.value
+    && items.value.length === 0
+    && total.value === 0) {
+    await refresh({ silent: true })
+  }
   if (!s) return
   let needRefresh = hadKeyword
   if (s.resetFilterOnShow && typeFilter.value !== '') {
@@ -846,7 +1022,13 @@ async function onWindowShow() {
   }
   if (needRefresh) await refresh({ silent: true })
   if (s.scrollTopOnShow) {
-    selectedIdx.value = 0
+    // 竞态保护：若用户在这段 await 期间已经按 ESC 关窗，就不要再给面板
+    // 标上"选中第一条"——否则下次唤起时第一次 ESC 又会先清选中，表现为
+    // "第一次 ESC 没反应 / 要按两三次才关窗"。
+    if (Date.now() - escHideAt > 800) {
+      selectedIdx.value = 0
+      autoHighlight.value = true
+    }
     // 先滚动到顶部
     listRef.value?.scrollTo({ top: 0 })
     // 清除多选状态，仅用 selectedIdx 表示键盘焦点，不写入 selectedIds
@@ -870,6 +1052,9 @@ function onVisibilityChange() {
   } else {
     // 窗口隐藏时退出设置，下次显示直接回到主列表
     if (view.value === 'settings') view.value = 'main'
+    // 隐藏路径不一定经过前端（托盘菜单、粘贴后由 Go 端直接隐藏等），
+    // 这里同样安排一次延迟释放。
+    scheduleThumbClear()
   }
 }
 
@@ -910,7 +1095,7 @@ function onKeyDown(e: KeyboardEvent) {
     if (keyMatch && altMatch && ctrlMatch && metaMatch && shiftMatch) {
       e.preventDefault()
       e.stopPropagation()
-      HideWindow()
+      hideWindow()
       return
     }
   }
@@ -1017,10 +1202,12 @@ function onKeyDown(e: KeyboardEvent) {
     switchFilter(e.key === 'ArrowLeft' ? -1 : 1)
   } else if (e.key === 'ArrowDown') {
     selectedIdx.value = Math.min(selectedIdx.value + 1, items.value.length - 1)
+    autoHighlight.value = false
     e.preventDefault()
     scrollSelectedIntoView()
   } else if (e.key === 'ArrowUp') {
     selectedIdx.value = Math.max(selectedIdx.value - 1, 0)
+    autoHighlight.value = false
     e.preventDefault()
     scrollSelectedIntoView()
   } else if (e.key === ' ' && !searchHasValue && selected.value) {
@@ -1068,11 +1255,17 @@ function onKeyDown(e: KeyboardEvent) {
     doPaste(selected.value)
   } else if (e.key === 'Escape') {
     if (detailVisible.value) detailVisible.value = false
-    else if (selectedIds.value.length > 0 || selectedIdx.value !== -1) {
+    // 只有"用户主动选中"才先清除选中：唤起时自动高亮的第一条（autoHighlight）
+    // 不算，必须直接关窗，否则 Windows 上每次唤起都要按 2~3 次 ESC 才关闭。
+    else if (selectedIds.value.length > 0 || (selectedIdx.value !== -1 && !autoHighlight.value)) {
       clearSelection()
       selectedIdx.value = -1
+      autoHighlight.value = false
     }
-    else HideWindow()
+    else {
+      escHideAt = Date.now()
+      hideWindow()
+    }
   } else if ((e.key === 'Delete' || e.key === 'Backspace') && !searchHasValue && (selected.value || selectedIds.value.length > 0)) {
     // 删除选中项：
     //   - Delete：Win/Linux 键盘 + Mac 外接键盘
@@ -1092,6 +1285,8 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 let unsubscribe: (() => void) | null = null
+// 开机自启（boot）模式下用于 WebView2 存活探测的心跳定时器句柄。
+let heartbeatTimer: number | undefined
 
 onMounted(async () => {
   // 平台标识：Mac 下给红黄绿按钮预留空间
@@ -1101,22 +1296,26 @@ onMounted(async () => {
   window.addEventListener('compositionstart', () => {
     isComposingGlobal.value = true
     lastCompositionEndTime = 0
-    ;(window as any).go?.main.App.SetIsComposing(true)
+    SetIsComposing(true).catch(() => {})
   })
   window.addEventListener('compositionend', () => {
     isComposingGlobal.value = false
     lastCompositionEndTime = Date.now()
-    ;(window as any).go?.main.App.SetIsComposing(false)
+    SetIsComposing(false).catch(() => {})
   })
   window.addEventListener('blur', onWindowBlur)
   window.addEventListener('resize', syncWebViewBg)
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // Wails v3：Events.On 返回取消函数（v2 时代用 EventsOff(name) 逐个注销）；
+  // 回调参数是 WailsEvent，后端 emit 的载荷在 ev.data。
+  const offs: Array<() => void> = []
   // 监听后端 emit 的 window:show 事件——Windows 上 visibilitychange 不一定触发，
   // 需要后端显式通知才能执行"激活时回到顶部 / 切换至全部分组"等功能。
-  EventsOn('window:show', () => { onWindowShow() })
+  offs.push(Events.On('window:show', () => { onWindowShow() }))
   // 全局 Alt+`/Alt+1..6 唤起并切到第 N 个 tab：后端 hotkey.Manager 注册的系统级快捷键
   // 即使应用未聚焦也能命中，命中后唤起面板并 emit 此事件。
-  EventsOn('tab:switch', (idx: number) => {
+  offs.push(Events.On('tab:switch', (ev) => {
+    const idx = ev.data as unknown
     if (typeof idx !== 'number') return
     // 用户用 Alt+N 明确指定了分类 → 让接下来这段时间内的窗口激活
     // 跳过 "切换至全部分组 / 回到顶部" 副作用，避免反向覆盖。
@@ -1125,15 +1324,18 @@ onMounted(async () => {
     // 设置页时也允许切换：先回到主列表，再切 tab，符合"快捷键即唤起"的预期
     if (view.value !== 'main') view.value = 'main'
     switchFilterByIndex(idx)
-  })
+  }))
   await loadSettings()
   // loadSettings → applyTheme 已调 syncWebViewBg，这里再兜底一次确保初始化正确
   syncWebViewBg()
+  // 先注册事件监听、再拉首屏列表：refresh 内部已兜底不会 reject，但顺序上
+  // 保证即使首屏拉取异常，后续 clipboard:new / cmdq / 心跳等机制依然完整。
+  offs.push(Events.On('clipboard:new', async () => { await refresh() }))
   await refresh()
-  EventsOn('clipboard:new', async () => { await refresh() })
   // "扩展功能" Cmd+Q 防误触：后端拦截到 Cmd+Q 时 emit 此事件，前端显示轻量 toast。
   // reason: "confirm-first"（首次按下，进入确认窗口）/ "confirm-timeout"（窗口过期）/ "disabled"（禁用状态被按下）
-  EventsOn('cmdq:intercepted', (reason: string) => {
+  offs.push(Events.On('cmdq:intercepted', (ev) => {
+    const reason = ev.data as unknown
     if (reason === 'confirm-first') {
       showCmdQToast(t('cmdQToastConfirm'))
     } else if (reason === 'disabled') {
@@ -1141,14 +1343,22 @@ onMounted(async () => {
     } else if (reason === 'confirm-timeout') {
       hideCmdQToast()
     }
-  })
+  }))
   // 托盘菜单"设置"项：后端 emit 此事件让前端切换到设置视图。
-  EventsOn('view:settings', () => { view.value = 'settings' })
+  offs.push(Events.On('view:settings', () => { view.value = 'settings' }))
   unsubscribe = () => {
-    EventsOff('clipboard:new'); EventsOff('window:show')
-    EventsOff('tab:switch'); EventsOff('cmdq:intercepted')
-    EventsOff('view:settings')
+    offs.forEach((off) => off())
+    offs.length = 0
   }
+
+  // 开机自启健康检查心跳：周期性通知 Go 端 WebView 存活。若 WebView2 在 boot 模式
+  // 下崩溃，Go 端看门狗会据此自愈重拉起，用户不会看到损坏的软件。
+  // v3 的绑定是编译期静态生成的，Heartbeat 一定存在，不再需要 v2 时代
+  // "检测 window.go.main.App.Heartbeat 是否存在"的保护。
+  Heartbeat().catch(() => {})
+  heartbeatTimer = window.setInterval(() => {
+    Heartbeat().catch(() => {})
+  }, 3000)
 
   // 冷启动焦点：由 Go 端 domReady 在窗口可见时主动 emit 'window:show'，
   // 走和热启动一致的 onWindowShow 路径（聚焦搜索框、激活副作用）。
@@ -1164,6 +1374,8 @@ onUnmounted(() => {
   window.removeEventListener('resize', syncWebViewBg)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   if (spacePreviewTimer != null) { window.clearTimeout(spacePreviewTimer); spacePreviewTimer = null }
+  if (heartbeatTimer != null) { window.clearInterval(heartbeatTimer); heartbeatTimer = undefined }
+  cancelThumbClear()
   if (unsubscribe) unsubscribe()
 })
 
@@ -1245,7 +1457,7 @@ function onWindowBlur() {
       if (suppressBlurHide.value > 0) return  // 延迟期间也可能新开了 dialog
       // 隐藏前退出设置，下次显示直接回到主列表
       if (view.value === 'settings') view.value = 'main'
-      HideWindow()
+      hideWindow()
     }
   }, 150)
 }
@@ -1458,12 +1670,16 @@ function showEmojiToast(msg: string) {
           </div>
         </div>
         <div v-if="loadingMore" class="loading-more">{{ t('loading') }}</div>
+        <!-- 达到内存上限后停止自动加载，提示用搜索定位更早记录（见 MAX_ITEMS_IN_MEMORY） -->
+        <div v-else-if="reachedItemCap && items.length < total" class="loading-more">
+          {{ t('listCapHint', { n: MAX_ITEMS_IN_MEMORY }) }}
+        </div>
       </main>
 
-      <!-- Emoji Picker 视图: 始终保持布局(有宽高)，visibility 控制可见性，切换零延迟。
-           外层 v-if 受 emojiMounted 控制（emojiEnabled 的防抖派生）：关闭总开关
-           会卸载组件以释放 emoji-mart-data 的常驻数据；再开启时挂回，
-           sprite WebP 已在浏览器缓存中，首帧近似零延迟。 -->
+      <!-- Emoji Picker 视图: 懒挂载。外层 v-if 受 emojiMounted 控制：
+           首次进入 emoji 视图时挂载，离开后空闲 30s 卸载（见 watch(view)）；
+           关闭 emojiEnabled 总开关则立即卸载。挂载期间隐藏用 opacity:0，
+           30s 内来回切换仍是零延迟。 -->
       <main v-if="emojiMounted" class="emoji-main" :class="{ 'emoji-hidden': view !== 'emoji' }">
         <EmojiPicker ref="emojiPickerRef" :theme="theme" :search="emojiKeyword" :active="view === 'emoji'" :extended-emoji="extendedEmoji" @select="onEmojiSelect" @dblselect="onEmojiPaste" />
       </main>

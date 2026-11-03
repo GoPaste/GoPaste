@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css">
+<style>
+  .desk { position: absolute; inset: 0; background:
+    radial-gradient(ellipse 70% 60% at 30% 20%, #1c2030 0%, #12141a 60%, #0c0d11 100%); }
+  .win { position: absolute; border-radius: 14px; overflow: hidden; background: #0f1117;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.05), 0 30px 60px rgba(0,0,0,.5); }
+  .win .bar { height: 44px; background: #171a22; display: flex; align-items: center; gap: 10px; padding: 0 18px; }
+  .win .dot { width: 13px; height: 13px; border-radius: 50%; background: #2a2f3a; }
+  .win .title { margin-left: 16px; font: 500 16px var(--sans); color: #6b7280; }
+  .code { padding: 26px 0 0 0; font: 400 21px/1.75 var(--mono); color: #a8adbd; white-space: pre; }
+  .code .ln { display: inline-block; width: 64px; text-align: right; padding-right: 22px; color: #3a4050; }
+  .k { color: #ff7b72 } .s { color: #a5d6ff } .f { color: #d2a8ff } .c { color: #6b7280 }
+  .caret { display: inline-block; width: 3px; height: 26px; background: #3b82f6; vertical-align: -5px; box-shadow: 0 0 10px #3b82f6; }
+  .blurred { filter: blur(1.6px) brightness(.62); }
+  .spot { position: absolute; inset: 0; background:
+    radial-gradient(ellipse 30% 46% at 66% 46%, rgba(59,130,246,.16) 0%, rgba(59,130,246,0) 70%),
+    radial-gradient(ellipse 80% 80% at 66% 46%, rgba(0,0,0,0) 30%, rgba(0,0,0,.55) 100%); }
+  .beam { position: absolute; left: 1050px; top: -200px; width: 600px; height: 900px;
+    background: linear-gradient(180deg, rgba(160,195,255,.10), rgba(160,195,255,0) 80%);
+    clip-path: polygon(38% 0, 62% 0, 100% 100%, 0 100%); filter: blur(10px); }
+  .label { position: absolute; left: 60px; bottom: 44px; font: 500 20px var(--mono); color: #4b5263; letter-spacing: .12em; }
+  .plus { position: absolute; font: 500 54px var(--sans); color: #6b7280; }
+</style></head>
+<body><div class="stage">
+  <div class="desk"></div>
+  <div class="win blurred" style="left:110px; top:120px; width:1240px; height:820px;">
+    <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">repo.go — gopaste</span></div>
+<div class="code"><span class="ln">41</span><span class="c">// Search 按关键字分页查询历史记录</span>
+<span class="ln">42</span><span class="k">func</span> (r *Repo) <span class="f">Search</span>(q types.SearchQuery) ([]types.Item, <span class="k">error</span>) {
+<span class="ln">43</span>    <span class="k">var</span> items []types.Item
+<span class="ln">44</span>    tx := r.db.<span class="f">Where</span>(<span class="s">"preview LIKE ?"</span>, <span class="s">"%"</span>+q.Keyword+<span class="s">"%"</span>)
+<span class="ln">45</span>    <span class="k">if</span> q.Type != <span class="s">""</span> {
+<span class="ln">46</span>        tx = tx.<span class="f">Where</span>(<span class="s">"type = ?"</span>, q.Type)
+<span class="ln">47</span>    }
+<span class="ln">48</span>    <span class="k">return</span> items, tx.<span class="f">Order</span>(<span class="s">"updated_at DESC"</span>).<span class="f">Find</span>(&amp;items).Error
+<span class="ln">49</span>}
+<span class="ln">50</span>
+<span class="ln">51</span><span class="k">func</span> (r *Repo) <span class="f">Recent</span>() { <span class="caret"></span>
+<span class="ln">52</span>
+<span class="ln">53</span>}</div>
+  </div>
+  <div class="spot"></div>
+  <div class="beam"></div>
+  <div class="panel" style="left:1000px; top:150px; width:700px; height:700px; background-image:url(../public/textures/panel/panel-dark-selected.png);"></div>
+  <div class="key pressed" style="left:300px; top:740px; width:210px; height:124px; font-size:46px;">Alt</div>
+  <div class="plus" style="left:540px; top:766px;">+</div>
+  <div class="key pressed" style="left:604px; top:740px; width:124px; height:124px; font-size:60px;"><span class="glyph">`</span></div>
+  <div class="label">SF-02 · 一键呼出 · spotlight-hero-card + 键帽 · ≈ 4s</div>
+  <div class="grain"></div>
+</div></body></html>

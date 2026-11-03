@@ -18,8 +18,6 @@ import (
 	_ "embed"
 	"runtime"
 	"sync"
-
-	"fyne.io/systray"
 )
 
 var (
@@ -100,13 +98,11 @@ var iconGrayPNG []byte
 
 // Start 启动系统托盘。
 //
-//   - macOS：用纯 cgo NSStatusItem 实现，完全绕开 fyne.io/systray。
-//     fyne/systray 在 macOS 上会把一个 Go runtime 分配的 block/对象设为
-//     NSStatusItem 的 ObjC target，Go GC 可能回收该对象，点击时
-//     objc_msgSend 访问已释放内存 → SIGSEGV (PC=libobjc+0x28, addr=0x20)。
-//     纯 cgo 方案所有 ObjC 对象由 ARC 持有，Go GC 无法触及。
-//   - Linux：仍走 fyne.io/systray（RunWithExternalLoop）。
-//   - Windows：systray.Run 放独立 goroutine。
+//   - macOS：纯 cgo NSStatusItem 实现（start_darwin.go），完全不链接 fyne.io/systray。
+//     fyne/systray 在 macOS 上会把 Go runtime 分配的对象设为 NSStatusItem 的 ObjC
+//     target，Go GC 可能回收该对象导致 SIGSEGV；同时其 ObjC 类 MenuItem 与 wails
+//     的 MenuItem 符号冲突，会导致链接失败（duplicate symbol）。
+//   - Linux / Windows：fyne.io/systray（start_other.go）。
 //
 // 返回 cleanup 回调：调用后关闭托盘。
 func Start(cb Callbacks) (cleanup func()) {
@@ -114,100 +110,7 @@ func Start(cb Callbacks) (cleanup func()) {
 	started = true
 	startedMu.Unlock()
 
-	if cleanup, ok := startPlatform(cb); ok {
-		return cleanup
-	}
-
-	// Windows / Linux：继续用 fyne.io/systray
-	onReady := func() {
-		applyIcon()
-		systray.SetTitle("")
-		systray.SetTooltip("GoPaste · 剪切板管理")
-
-		systray.SetOnTapped(func() {
-			if cb.OnShow != nil {
-				cb.OnShow()
-			}
-		})
-
-		mShow := systray.AddMenuItem("显示主面板", "打开 GoPaste 主窗口")
-		mSettings := systray.AddMenuItem("打开设置", "打开偏好设置")
-		systray.AddSeparator()
-		mAbout := systray.AddMenuItem("关于", "版本与项目信息")
-		mWebsite := systray.AddMenuItem("打开官网", "在浏览器中打开 GoPaste 官网")
-		systray.AddSeparator()
-		mRestart := systray.AddMenuItem("重启", "重新启动应用")
-		mQuit := systray.AddMenuItem("退出", "完全关闭应用")
-
-		go func() {
-			for {
-				select {
-				case <-mShow.ClickedCh:
-					if cb.OnShow != nil {
-						cb.OnShow()
-					}
-				case <-mSettings.ClickedCh:
-					if cb.OnSettings != nil {
-						cb.OnSettings()
-					}
-				case <-mAbout.ClickedCh:
-					if cb.OnAbout != nil {
-						cb.OnAbout()
-					}
-				case <-mWebsite.ClickedCh:
-					if cb.OnWebsite != nil {
-						cb.OnWebsite()
-					}
-				case <-mRestart.ClickedCh:
-					systray.Quit()
-					if cb.OnRestart != nil {
-						cb.OnRestart()
-					}
-					return
-				case <-mQuit.ClickedCh:
-					systray.Quit()
-					if cb.OnQuit != nil {
-						cb.OnQuit()
-					}
-					return
-				}
-			}
-		}()
-	}
-	onExit := func() {}
-
-	if runtime.GOOS == "windows" {
-		go systray.Run(onReady, onExit)
-		return func() { systray.Quit() }
-	}
-
-	// Linux
-	start, end := systray.RunWithExternalLoop(onReady, onExit)
-	SetPendingStart(start)
-	return func() { end() }
-}
-
-// applyIcon 设置平台对应的图标，感知当前图标风格。
-// 抽成独立函数，在 Start 的 onReady 和 SetVisible(true) 中都需要调用。
-func applyIcon() {
-	if runtime.GOOS == "windows" {
-		if currentIconStyle == "gray" {
-			systray.SetIcon(iconGrayICO)
-		} else {
-			systray.SetIcon(iconICO)
-		}
-	} else if runtime.GOOS == "darwin" {
-		// 用户选择菜单栏图标与 dock 图标视觉一致：用彩色 SetIcon，
-		// 而非 template。如要恢复自适应深浅模式的规范做法，改回
-		// SetTemplateIcon(iconTemplatePNG, iconTemplatePNG) 即可。
-		systray.SetIcon(iconColorPNG)
-		// 注：v1/v2 两版 setTrayIconSizePt 都会让主线程 RunMainLoop
-		// SIGSEGV(addr=0x20)。临时全部禁用以确认基线稳定。换思路用
-		// "改 PNG 内容比例（让图形撑满更多画布）"来视觉放大图标。
-		// setTrayIconSizePt(22)
-	} else {
-		systray.SetIcon(iconPNG)
-	}
+	return startPlatform(cb)
 }
 
 // CanToggle 返回当前平台是否支持"不重启进程"地切换托盘图标显隐。
@@ -238,8 +141,7 @@ func SetVisible(show bool) {
 
 	// 重新添加图标后恢复图标和 tooltip
 	if show {
-		applyIcon()
-		systray.SetTooltip("GoPaste · 剪切板管理")
+		restoreAfterShow()
 	}
 }
 

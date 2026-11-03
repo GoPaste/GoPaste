@@ -3,15 +3,14 @@
 package window
 
 import (
-	"context"
 	goruntime "runtime"
 	"syscall"
 	"unsafe"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// Title 主窗口标题，必须与 options.App.Title 保持一致。
+// Title 主窗口标题，必须与 main.go 里 WebviewWindowOptions.Title 保持一致。
 const Title = "GoPaste"
 
 // ===========================================================================
@@ -103,13 +102,19 @@ const (
 
 	wmActivate    = 0x0006
 	wmSetfocus    = 0x0007
+	wmCancelMode  = 0x001F
 	waActive      = 1
 	waClickactive = 2
 )
 
-// findMainHwnd 通过窗口标题找到本应用的主 HWND。
-// Wails v2 没有公开 HWND，只能靠标题查。Title 与 options.App.Title 一致。
-func findMainHwnd() uintptr {
+// findMainHwnd 取主窗口 HWND：优先用 v3 公开的 NativeWindow()，
+// 拿不到（原生窗口尚未创建）时退回按标题 FindWindowW。
+func findMainHwnd(w application.Window) uintptr {
+	if w != nil {
+		if p := w.NativeWindow(); p != nil {
+			return uintptr(p)
+		}
+	}
 	titlePtr, _ := syscall.UTF16PtrFromString(Title)
 	hwnd, _, _ := procFindWindowW.Call(0, uintptr(unsafe.Pointer(titlePtr)))
 	return hwnd
@@ -153,10 +158,10 @@ func forceForeground(hwnd uintptr) {
 		fgTID, _, _ = procGetWindowThreadPIDFG.Call(fg, 0)
 	}
 
-	// 关键：模拟一次 ALT 按下抬起，刷新 OS 的 "最后输入时间戳"，
-	// 让我们进程满足 SetForegroundWindow 的合法性检查。
-	// 即使 AttachThreadInput 也成功，加这个也无副作用。
-	sendAltTap()
+	// 注意：ALT tap（sendAltTap）已上移到 ShowMain 的 w.Show() 之前。
+	// 旧实现在这里（Show 之后）模拟 Alt，若此时窗口已激活、焦点已进
+	// WebView2，模拟的 Alt tap 会被 Chromium 当成一次完整的 Alt 按键进入
+	// "菜单模式"，用户随后按的第一个方向键会弹出系统菜单而不是选中列表项。
 
 	attached := false
 	if fgTID != 0 && fgTID != curTID {
@@ -183,22 +188,22 @@ func forceForeground(hwnd uintptr) {
 // ShowMain 在 Windows 上唤起主窗口，确保窗口真正成为 foreground window。
 //
 // 必须做的事（缺一不可）：
-//  1. wailsruntime.WindowShow(ctx) —— 让 Wails 翻转内部 visibility 状态、
-//     发 EventsEmit 等。如果跳过，Wails 仍认为窗口隐藏，后续 WindowHide
-//     不会工作。
+//  1. w.Show() —— 让 Wails 翻转内部 visibility 状态，并在 WebView2 导航完成后
+//     chromium.Show()。如果跳过，Wails 仍认为窗口隐藏，后续 Hide 不会工作。
+//     v3 的 show() 只做 ShowWindow(SW_SHOW)，同样过不了前台限制，所以第 2 步仍然必要。
 //  2. forceForeground(hwnd) —— 用 AttachThreadInput trick 真的把窗口抢到
-//     前台。这一步是关键：单靠 WindowShow 在 background process 状态下
+//     前台。这一步是关键：单靠 Show 在 background process 状态下
 //     不能可靠地拿到键盘焦点。
 //  3. focusWebView(hwnd) —— 把 keyboard focus 显式下放到 WebView2 子窗口。
 //     冷启动场景下，WebView2 的 WM_ACTIVATE 内置焦点处理在我们抢前台
 //     之前就已经走完了，不会再触发；必须由我们主动 SetFocus 到子窗口，
 //     键盘消息才会派给前端 (keydown/搜索框输入)。
 //
-// 时序：先 WindowShow（让窗口可见），再 forceForeground（抢前台），
+// 时序：先 Show（让窗口可见），再 forceForeground（抢前台），
 // 最后 focusWebView（下放焦点）。反过来不行：focusWebView 必须在抢前台
 // 成功后做，否则跨进程 SetFocus 是 no-op（见踩坑史 v1）。
-func ShowMain(ctx context.Context) {
-	if ctx == nil {
+func ShowMain(w application.Window) {
+	if w == nil {
 		return
 	}
 	// 关键：锁定 OS 线程。AttachThreadInput 是 per-thread 的状态，
@@ -208,22 +213,55 @@ func ShowMain(ctx context.Context) {
 	goruntime.LockOSThread()
 	defer goruntime.UnlockOSThread()
 
-	wailsruntime.WindowShow(ctx)
+	// 关键时序：ALT tap 必须在 Show 之前发。
+	// sendAltTap 模拟的 Alt 按下/抬起会派发给"当时的焦点窗口"。若在 Show
+	// 之后发，窗口可能已激活、焦点已进 WebView2 子窗口，Chromium 会把这次
+	// Alt tap 当成完整按键进入"菜单模式"——随后用户按的第一个方向键不再
+	// 选中列表项，而是弹出系统菜单（还原/移动/大小/...）。提前到 Show 之前，
+	// Alt tap 落在前一个前台窗口上，仅刷新 OS 的"最近输入时间戳"，不影响
+	// 我们自己的窗口（时间戳是全局的，之后 SetForegroundWindow 依然合法）。
+	sendAltTap()
 
-	hwnd := findMainHwnd()
+	w.Show()
+
+	hwnd := findMainHwnd(w)
 	if hwnd == 0 {
 		return
 	}
 	forceForeground(hwnd)
 	focusWebView(hwnd)
+	cancelMenuMode(hwnd)
 }
 
-// HideMain 在 Windows 上直接走 Wails 的 WindowHide。
-func HideMain(ctx context.Context) {
-	if ctx == nil {
+// cancelMenuMode 向主窗口与 WebView2 宿主投递 WM_CANCELMODE，退出可能残留的
+// Win32 "菜单模式"。
+//
+// 场景：全局热键是 Alt+N / Alt+`，唤起瞬间物理 Alt 键的 keyup 可能派发到刚
+// 拿到焦点的 WebView2 子窗口。Chromium 收到"只有 up 没有 down"的 Alt 序列后
+// 会进入菜单模式（等价于用户单独按了一下 Alt），此后第一个方向键/空格不再进
+// 列表，而是弹出系统菜单。WM_CANCELMODE 是 OS 取消菜单模式/鼠标捕获的标准
+// 消息，DefWindowProc 处理它会退出菜单状态机。显示流程中本就无菜单无捕获，
+// 此时发送无副作用。
+func cancelMenuMode(hwnd uintptr) {
+	if hwnd == 0 {
 		return
 	}
-	wailsruntime.WindowHide(ctx)
+	procSendMessageW.Call(hwnd, wmCancelMode, 0, 0)
+	render, host := findWebViewTarget(hwnd)
+	if render != 0 {
+		procSendMessageW.Call(render, wmCancelMode, 0, 0)
+	}
+	if host != 0 {
+		procSendMessageW.Call(host, wmCancelMode, 0, 0)
+	}
+}
+
+// HideMain 在 Windows 上直接走 v3 的 Hide（ShowWindow(SW_HIDE) + chromium.Hide()）。
+func HideMain(w application.Window) {
+	if w == nil {
+		return
+	}
+	w.Hide()
 }
 
 // focusWebView 把键盘焦点显式 SetFocus 到 WebView2 的子窗口。
@@ -257,57 +295,11 @@ func focusWebView(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	// 只关心本进程的子窗口，避免误命中嵌入的其它进程窗口
-	myPID, _, _ := procGetCurrentPID.Call()
+	render, host := findWebViewTarget(hwnd)
 
-	type found struct {
-		render uintptr // Chrome_RenderWidgetHostHWND
-		host   uintptr // Chrome_WidgetWin_*
-	}
-	var f found
-
-	// 递归枚举：EnumChildWindows 默认只枚举直接子窗口，但传 hwnd=0 给它枚举
-	// 桌面也不对。改用手动递归。
-	var enumRec func(parent uintptr)
-	enumRec = func(parent uintptr) {
-		cb := syscall.NewCallback(func(child uintptr, _ uintptr) uintptr {
-			// PID 过滤
-			var pid uintptr
-			procGetWindowThreadPIDFG.Call(child, uintptr(unsafe.Pointer(&pid)))
-			if pid != myPID {
-				return 1 // 继续枚举同级
-			}
-			// 拿 class name
-			buf := make([]uint16, 128)
-			n, _, _ := procGetClassNameW.Call(
-				child,
-				uintptr(unsafe.Pointer(&buf[0])),
-				uintptr(len(buf)),
-			)
-			if n > 0 {
-				class := syscall.UTF16ToString(buf[:n])
-				switch class {
-				case "Chrome_RenderWidgetHostHWND":
-					if f.render == 0 {
-						f.render = child
-					}
-				case "Chrome_WidgetWin_0", "Chrome_WidgetWin_1":
-					if f.host == 0 {
-						f.host = child
-					}
-				}
-			}
-			// 递归向下
-			enumRec(child)
-			return 1 // 继续枚举同级
-		})
-		procEnumChildWindows.Call(parent, cb, 0)
-	}
-	enumRec(hwnd)
-
-	target := f.render
+	target := render
 	if target == 0 {
-		target = f.host
+		target = host
 	}
 	if target == 0 {
 		return
@@ -333,8 +325,60 @@ func focusWebView(hwnd uintptr) {
 	procSendMessageW.Call(target, wmSetfocus, 0, 0)
 }
 
+// findWebViewTarget 在主窗口的子树里定位 WebView2 接收键盘的窗口。
+// 返回 (render, host)：render 是 Chrome_RenderWidgetHostHWND（真正接收键盘），
+// host 是 Chrome_WidgetWin_*（宿主）。找不到时对应值为 0。
+//
+// 只关心本进程的子窗口，避免误命中嵌入的其它进程窗口。
+func findWebViewTarget(hwnd uintptr) (uintptr, uintptr) {
+	myPID, _, _ := procGetCurrentPID.Call()
+
+	var render, host uintptr
+
+	// 递归枚举：EnumChildWindows 默认只枚举直接子窗口，但传 hwnd=0 给它枚举
+	// 桌面也不对。改用手动递归。
+	var enumRec func(parent uintptr)
+	enumRec = func(parent uintptr) {
+		cb := syscall.NewCallback(func(child uintptr, _ uintptr) uintptr {
+			// PID 过滤
+			var pid uintptr
+			procGetWindowThreadPIDFG.Call(child, uintptr(unsafe.Pointer(&pid)))
+			if pid != myPID {
+				return 1 // 继续枚举同级
+			}
+			// 拿 class name
+			buf := make([]uint16, 128)
+			n, _, _ := procGetClassNameW.Call(
+				child,
+				uintptr(unsafe.Pointer(&buf[0])),
+				uintptr(len(buf)),
+			)
+			if n > 0 {
+				class := syscall.UTF16ToString(buf[:n])
+				switch class {
+				case "Chrome_RenderWidgetHostHWND":
+					if render == 0 {
+						render = child
+					}
+				case "Chrome_WidgetWin_0", "Chrome_WidgetWin_1":
+					if host == 0 {
+						host = child
+					}
+				}
+			}
+			// 递归向下
+			enumRec(child)
+			return 1 // 继续枚举同级
+		})
+		procEnumChildWindows.Call(parent, cb, 0)
+	}
+	enumRec(hwnd)
+
+	return render, host
+}
+
 // ResignMainKey 在 Windows 上是 no-op（等价概念是把前台让给其他窗口，
 // 由 HideMain + RestorePreviousWindow 实现）。
-func ResignMainKey(ctx context.Context) {
-	_ = ctx
+func ResignMainKey(w application.Window) {
+	_ = w
 }

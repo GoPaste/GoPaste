@@ -11,9 +11,16 @@ frontend/node_modules/
 frontend/dist/
 
 # Wails
+# v2 时代的自动生成绑定（v3 已不再使用，保留忽略规则避免本地残留目录被误提交）
 frontend/wailsjs/
+# v3 自动生成的前端绑定：`wails3 task bindings` / 构建前由 Taskfile 自动生成，不入库
+frontend/bindings/
 # wails 本地生成的 package.json 指纹，每台机器不同，不入库
 frontend/package.json.md5
+# Taskfile 增量构建的校验缓存
+.task/
+# wails3 generate syso 的临时产物（构建结束会删除，异常中断时可能残留）
+*.syso
 
 # IDE
 .vscode/

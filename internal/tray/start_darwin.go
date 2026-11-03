@@ -3,10 +3,12 @@
 package tray
 
 // startPlatform 在 macOS 上使用纯 CGO NSStatusItem 实现托盘。
-func startPlatform(cb Callbacks) (cleanup func(), ok bool) {
-	end := installStatusItem(cb, iconColorPNG)
-	return end, true
+func startPlatform(cb Callbacks) (cleanup func()) {
+	return installStatusItem(cb, iconColorPNG)
 }
+
+// restoreAfterShow：showStatusItem 重建时已自行恢复图标，无需额外处理。
+func restoreAfterShow() {}
 
 // setIconStylePlatform 切换 macOS 菜单栏图标风格。
 func setIconStylePlatform(style string) {

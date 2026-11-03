@@ -1,143 +1,55 @@
-// panel_darwin.m —— 把 Wails 创建的普通 NSWindow 改造成
-// NSPanel + NSWindowStyleMaskNonactivatingPanel。
+// panel_darwin.m —— macOS 主面板（NSPanel + NonactivatingPanel）的辅助能力。
 //
-// 背景：
-//   参见 docs/ecopaste-analysis.md。剪贴板面板类 app 必须解决"显示时不
-//   抢前台应用的 active 状态"。普通 NSWindow 做不到；macOS 给这类场景
-//   专门设计了 NSPanel 的 NonactivatingPanel 样式位。
+// 设计前提：GoPaste 的面板显示时**不能抢走前台应用的 active 状态**，否则粘贴的
+// Cmd+V 会打回 GoPaste 自己。Wails v3 通过 WebviewWindowOptions.Mac 原生创建了
+// 带 NSWindowStyleMaskNonactivatingPanel 的 WebviewPanel，并且它的 Show/Focus 也遵循
+// 这个约定（见 wails 的 windowShow / windowFocus：非激活面板只 orderFrontRegardless +
+// makeKeyWindow，绝不 activateIgnoringOtherApps:）。
 //
-//   Wails v2 没有暴露让你指定窗口类型，它走 [NSWindow alloc] init… 的标
-//   准路径。我们只能在窗口已经创建好以后，用 Obj-C runtime 原位替换它
-//   的 isa 指针到 NSPanel 子类。这是 tauri-nspanel / 很多 Cocoa 老项目
-//   都在用的合法手法。
+// 因此本文件只做两件 wails 没覆盖的事，除此之外不再碰窗口：
 //
-//   NSPanel 默认在带 NonactivatingPanel 样式时 canBecomeKeyWindow 返
-//   回 NO（这也是"不抢 active app"的关键机制之一）。但我们的面板里有
-//   搜索框 / 方向键导航 / 回车，必须能接收键盘。所以定义一个子类
-//   GoPasteNSPanel 显式把 canBecomeKeyWindow 覆盖成 YES：只要面板出现
-//   就成为 key window（拿到键盘输入），但**因为有 NonactivatingPanel
-//   样式位，它并不成为 active application** —— 用户原本在编辑的那个
-//   app 仍然是 [NSApplication sharedApplication].active，Cmd+V 最终会
-//   打到它身上。这正是我们想要的。
+//   1. 一次性外观配置（ConfigurePanel）：隐藏红绿灯、禁止 AppKit 的“按住背景拖窗口”。
+//      - 隐藏红绿灯：wails 提供了 SetCloseButtonState 等，这里用 AppKit 兜底，因为
+//        TitleBarHiddenInset 的 toolbar 重新布局后按钮偶尔会被还原。
+//      - movableByWindowBackground=NO：wails 的 WebviewPanel 初始化时强制设为 YES，
+//        会让 AppKit 在鼠标按下时进入窗口拖动跟踪。GoPaste 的窗口拖动走前端
+//        drag-region（wails:drag → performWindowDragWithEvent），不需要 AppKit 代劳。
+//
+//   2. 系统对话框需要 active app（ActivateForDialog / GoPasteSaveFileDialog）：
+//      NonactivatingPanel 下 NSAlert / NSSavePanel 需要 active app 才能显示并接收输入。
+//
+//   3. 点击穿透（install_first_mouse）：让 WKWebView 的 acceptsFirstMouse: 返回 YES，
+//      修掉“窗口未获焦点时第一次点击被吃掉”。acceptsFirstMouse: 是 NSView 的公开 API，
+//      不是私有接口；同类做法见 Electron 的 acceptFirstMouse 选项。
+//
+// 刻意不做的：
+//   - 不 isa swap（会破坏 wails WebviewPanel 的 sendEvent:/keyDown: 重写）。
+//   - 不在每次显示时重设 collectionBehavior / level：Space 行为由 wails 的
+//     Mac.CollectionBehavior 选项统一负责，重复设置只会引入两套互相打架的逻辑。
+//   - 不再保存窗口指针：show/hide 由 wails 的 Show()/Hide() 负责，本文件不参与。
 
 #import <Cocoa/Cocoa.h>
-#import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <WebKit/WebKit.h>
+#import <objc/runtime.h>
 #include <string.h>  // for strdup
 
 // ------------------------------------------------------------------
-// GoPasteNSPanel —— 空壳子类，仅重写 canBecomeKeyWindow / CanBecomeMain
-// ------------------------------------------------------------------
-@interface GoPasteNSPanel : NSPanel
-@end
-
-@implementation GoPasteNSPanel
-- (BOOL)canBecomeKeyWindow  { return YES; }
-- (BOOL)canBecomeMainWindow { return NO;  }  // 不做 main，避免干扰 AppKit 的 main-window 逻辑
-@end
-
-// ------------------------------------------------------------------
-// 根据 title 在 [NSApp windows] 中查找目标窗口。
-// Wails 每个 App 只有一个主窗口；title 来自 options.App.Title。
+// 按 title 在 [NSApp windows] 中查找主窗口。
+// GoPaste 只有一个主窗口；title 来自 WebviewWindowOptions.Title。
 // ------------------------------------------------------------------
 static NSWindow *find_window(NSString *title) {
     for (NSWindow *w in [NSApp windows]) {
-        if ([[w title] isEqualToString:title]) {
+        if ([w isKindOfClass:[NSPanel class]] && [[w title] isEqualToString:title]) {
             return w;
         }
-    }
-    // Fallback：Wails 在 TitleBarHiddenInset 下可能短暂没 title，
-    // 用 className 过滤掉系统辅助窗口后挑第一个可见的。
-    for (NSWindow *w in [NSApp windows]) {
-        NSString *cls = NSStringFromClass([w class]);
-        if ([cls hasPrefix:@"NSStatusBar"]) continue;
-        if ([cls hasPrefix:@"NSToolbar"])   continue;
-        if ([cls hasPrefix:@"NSMenu"])      continue;
-        return w;
     }
     return nil;
 }
 
 // ------------------------------------------------------------------
-// 把窗口转成 NonactivatingPanel。多次调用等价于一次（用 associated
-// object 打标记幂等）。必须在主线程执行。
+// 同步 / 异步调度到主线程（若已在主线程则直接执行），确保 AppKit 调用安全。
 // ------------------------------------------------------------------
-static const void *kPanelConvertedKey = &kPanelConvertedKey;
-
-static void convert_to_panel_on_main(NSString *title) {
-    NSWindow *win = find_window(title);
-    if (!win) {
-        NSLog(@"gopaste: convert_to_panel: window with title '%@' not found", title);
-        return;
-    }
-
-    NSNumber *done = objc_getAssociatedObject(win, kPanelConvertedKey);
-    if ([done boolValue]) return;
-
-    // 1) 改 class：NSWindow → GoPasteNSPanel（GoPasteNSPanel 继承自 NSPanel）。
-    //    object_setClass 仅修改 isa，对象内存布局保持兼容。NSPanel 没有比
-    //    NSWindow 多加 ivar，所以这是安全的。
-    object_setClass(win, [GoPasteNSPanel class]);
-
-    // 2) 加上 NonactivatingPanel 样式位。这一位就是"显示时不抢 active app"
-    //    的关键。注意 setStyleMask 要保留原有的 Titled/Closable/Miniaturizable/Resizable。
-    NSWindowStyleMask mask = [win styleMask] | NSWindowStyleMaskNonactivatingPanel;
-    [win setStyleMask:mask];
-
-    // 3) 浮动层级：让面板始终在普通应用窗口之上（和 Alfred/Raycast 一致）。
-    //    NSFloatingWindowLevel = NSNormalWindowLevel + 3。
-    [win setLevel:NSFloatingWindowLevel];
-
-    // 4) 其他面板化行为：
-    //    - HidesOnDeactivate=NO：我们自己控制显隐，不要 AppKit 代劳
-    //    - BecomesKeyOnlyIfNeeded=NO：让面板能正常成为 key，接收键盘
-    //    - CollectionBehavior：每次 show 主动跟到当前 Space / 在全屏应用上可见 / 不被 Expose 动
-    [win setHidesOnDeactivate:NO];
-    if ([win isKindOfClass:[NSPanel class]]) {
-        [(NSPanel *)win setBecomesKeyOnlyIfNeeded:NO];
-        [(NSPanel *)win setFloatingPanel:YES];
-    }
-    // ─── 跨 Space 显示策略：MoveToActiveSpace 而不是 CanJoinAllSpaces ───
-    // 之前用 CanJoinAllSpaces，意图是"窗口同时存在于所有 Space"，但实测在
-    // 多个全屏 Space（每个全屏应用自成一个 Space）的环境下，靠后的几个
-    // Space（Mission Control 里位置 4/5/6+）按全局快捷键不显示 —— AppKit
-    // 对 CanJoinAllSpaces 的实现在全屏 Space 多的场景有可观察的退化。
-    //
-    // 改用 MoveToActiveSpace：苹果文档明确说"窗口在 show 时移到当前 active
-    // Space"，专为非激活面板（NonactivatingPanel）跟随用户切 Space 设计。
-    // 两者语义互斥：
-    //   - CanJoinAllSpaces  = 面板恒存在于所有 Space（菜单栏下拉那种）
-    //   - MoveToActiveSpace = 面板按需"跳过来"，更贴合剪贴板/launcher 的
-    //                        "按快捷键弹一下"交互
-    // FullScreenAuxiliary 仍然保留：让面板能浮在 *全屏应用* 的窗口之上而
-    // 不被全屏窗口遮挡。Stationary 让面板不参与 Mission Control 的动画。
-    [win setCollectionBehavior:
-        NSWindowCollectionBehaviorMoveToActiveSpace |
-        NSWindowCollectionBehaviorFullScreenAuxiliary |
-        NSWindowCollectionBehaviorStationary];
-
-    // 5) 隐藏左上角 traffic lights（关闭/最小化/缩放）。
-    //    剪贴板面板是轻量浮层，不需要系统按钮——关闭由 ESC / 失焦触发，
-    //    最小化/缩放语义不适用。把三个 NSButton hidden=YES 即可，不影响
-    //    窗口内容区的可拖拽 titlebar 区域（Wails 的 drag region 不变）。
-    //    参考：Alfred/Raycast/Eco 都是同样处理方式。
-    NSButton *closeBtn = [win standardWindowButton:NSWindowCloseButton];
-    NSButton *miniBtn  = [win standardWindowButton:NSWindowMiniaturizeButton];
-    NSButton *zoomBtn  = [win standardWindowButton:NSWindowZoomButton];
-    if (closeBtn) closeBtn.hidden = YES;
-    if (miniBtn)  miniBtn.hidden  = YES;
-    if (zoomBtn)  zoomBtn.hidden  = YES;
-
-    objc_setAssociatedObject(win, kPanelConvertedKey, @YES, OBJC_ASSOCIATION_RETAIN);
-
-    NSLog(@"gopaste: window '%@' converted to NonactivatingPanel", title);
-}
-
-// ------------------------------------------------------------------
-// 对外 C 接口
-// ------------------------------------------------------------------
-
-// 同步调度到主线程（若已在主线程则直接执行），确保 AppKit 调用安全。
 static void run_on_main_sync(void (^block)(void)) {
     if ([NSThread isMainThread]) {
         block();
@@ -146,7 +58,6 @@ static void run_on_main_sync(void (^block)(void)) {
     }
 }
 
-// 同 run_on_main_sync 但异步，不阻塞调用线程。
 static void run_on_main_async(void (^block)(void)) {
     if ([NSThread isMainThread]) {
         block();
@@ -155,108 +66,127 @@ static void run_on_main_async(void (^block)(void)) {
     }
 }
 
-void GoPasteConvertToNonactivatingPanel(const char *ctitle) {
-    if (!ctitle) return;
-    NSString *title = [NSString stringWithUTF8String:ctitle];
-    // 转换涉及读取 NSApp.windows，AppKit 要求主线程。
-    // 用 sync 让 Go 侧调用完成后立刻能依赖面板状态。
-    run_on_main_sync(^{
-        convert_to_panel_on_main(title);
-    });
-}
+// ------------------------------------------------------------------
+// 对外 C 接口
+// ------------------------------------------------------------------
 
-// 隐藏面板：用 orderOut: 而非 [NSApp hide] / setIsVisible:NO。
-// orderOut 只把窗口从屏幕上移除，不牵动 active application 状态；
-// 对 NonactivatingPanel 而言是正确配对。
-void GoPasteOrderOut(const char *ctitle) {
-    if (!ctitle) return;
-    NSString *title = [NSString stringWithUTF8String:ctitle];
-    run_on_main_async(^{
-        NSWindow *win = find_window(title);
-        if (win) {
-            [win orderOut:nil];
-        }
-    });
-}
+static void install_occlusion_watch(void);
+static void install_first_mouse(void);
 
-// 显示面板：orderFrontRegardless 让面板前置但不激活 app。
-// 配合 makeKeyWindow 让我们的 JS/输入框拿到键盘焦点。
+// GoPasteConfigurePanel 做一次性的面板外观配置，返回：
+//    1  找到窗口，且确实是 NonactivatingPanel
+//    0  找不到窗口（原生窗口尚未创建，调用方可稍后重试）
+//   -1  找到窗口但不是 NonactivatingPanel —— wails 的 Panel 选项没生效，
+//       面板会抢前台、粘贴会打回自己。只告警，不尝试修复（isa swap 会破坏 wails）。
 //
-// ─── 跨 Space 显示的可靠性 ───────────────────────────────────────
-// 用户在 macOS 上可以通过触摸板四指左右滑切换 Space（桌面 / 全屏空间）。
-// 切到非"创建窗口时所在 Space"后按全局快捷键，普通 NSWindow 默认绑定
-// 在原 Space，系统会切回去而不是把窗口带到当前 Space —— 表现为"按了
-// 快捷键好像没反应"（实际上窗口在另一个 Space 出现了）。
-//
-// 解决方案：CollectionBehavior = MoveToActiveSpace + FullScreenAuxiliary。
-// 之前曾用 CanJoinAllSpaces，在普通桌面 Space 间切换没问题，但用户报告
-// 多个全屏 Space（6+ 个，前几个能弹后几个不能）时退化，已切换为
-// MoveToActiveSpace（每次 show 主动跳到当前 active Space，更适合按需弹出
-// 的剪贴板面板）。详见 convert_to_panel_on_main 里的设置注释。
-//
-// 这里 GoPasteOrderFront 在每次 show 前**重新强制设置一次** collectionBehavior
-// + floating level 作为兜底，原因：AppKit 在 makeKeyWindow / 全屏切换 /
-// Mission Control 等路径下会偶发性地清掉非默认的 collectionBehavior，导致
-// 面板"卡"在原 Space。幂等操作、无副作用，但能消除这类回归。
-//
-// 另一个隐形坑：orderFrontRegardless 对 hidden window 才会触发"挪到当前
-// Space"的动作（前提是 MoveToActiveSpace 已设）。顺序不能反——必须先
-// setCollectionBehavior 再 orderFrontRegardless。
-void GoPasteOrderFront(const char *ctitle) {
-    if (!ctitle) return;
-    NSString *title = [NSString stringWithUTF8String:ctitle];
-    run_on_main_async(^{
-        NSWindow *win = find_window(title);
-        if (!win) return;
-
-        // 兜底重置 collectionBehavior —— 与 convert_to_panel_on_main 保持一致。
-        // 即便 AppKit 中途清空过这些位，这里也能恢复，保证面板能跟到当前 Space。
-        [win setCollectionBehavior:
-            NSWindowCollectionBehaviorMoveToActiveSpace |
-            NSWindowCollectionBehaviorFullScreenAuxiliary |
-            NSWindowCollectionBehaviorStationary];
-        // 浮动层级也一并兜底（同样原因：可能被 AppKit 改回 NSNormalWindowLevel）。
-        [win setLevel:NSFloatingWindowLevel];
-
-        [win orderFrontRegardless];
-        [win makeKeyWindow];
-    });
-}
-
-// 交还键盘焦点给下面的应用：粘贴前调用一次，让目标应用成为 key window。
-// 不隐藏面板（Eco 的做法：resign 即可，hide 交给后续动作或让用户感知）。
-void GoPasteResignKey(const char *ctitle) {
-    if (!ctitle) return;
-    NSString *title = [NSString stringWithUTF8String:ctitle];
-    run_on_main_async(^{
-        NSWindow *win = find_window(title);
-        if (win) {
-            [win resignKeyWindow];
-        }
-    });
-}
-
-// GoPasteIsWindowKey 检查指定 title 的窗口当前是否是 keyWindow。
-// 返回 1 (true) / 0 (false)。
-// 供热键回调使用：若面板是 keyWindow，说明用户正在与 GoPaste 交互，
-// 此时不应再触发全局热键动作（如 togglePanel），避免与前端输入法组合冲突。
-int GoPasteIsWindowKey(const char *ctitle) {
+// 幂等，可在启动阶段重试调用。
+int GoPasteConfigurePanel(const char *ctitle) {
     if (!ctitle) return 0;
-    __block int isKey = 0;
+    install_occlusion_watch();
+    install_first_mouse();
     NSString *title = [NSString stringWithUTF8String:ctitle];
-    dispatch_sync(dispatch_get_main_queue(), ^{
+    __block int status = 0;
+    run_on_main_sync(^{
         NSWindow *win = find_window(title);
-        if (win && [win isKeyWindow]) {
-            isKey = 1;
+        if (!win) {
+            status = 0;
+            return;
+        }
+
+        // 隐藏左上角 traffic lights（关闭/最小化/缩放）：剪贴板面板是轻量浮层，
+        // 关闭由 ESC / 失焦触发，最小化/缩放语义不适用。
+        NSButton *closeBtn = [win standardWindowButton:NSWindowCloseButton];
+        NSButton *miniBtn  = [win standardWindowButton:NSWindowMiniaturizeButton];
+        NSButton *zoomBtn  = [win standardWindowButton:NSWindowZoomButton];
+        if (closeBtn) closeBtn.hidden = YES;
+        if (miniBtn)  miniBtn.hidden  = YES;
+        if (zoomBtn)  zoomBtn.hidden  = YES;
+
+        // 窗口拖动由前端 drag-region 负责，不让 AppKit 在按下时抢走鼠标序列。
+        [win setMovableByWindowBackground:NO];
+
+        BOOL ok = [win isKindOfClass:[NSPanel class]] &&
+            ([win styleMask] & NSWindowStyleMaskNonactivatingPanel) != 0;
+        if (ok) {
+            status = 1;
+        } else {
+            NSLog(@"gopaste: WARN window '%@' (class=%@) is NOT a NonactivatingPanel; "
+                  @"check WebviewWindowOptions.Mac.WindowClass/PanelPreferences",
+                  title, NSStringFromClass([win class]));
+            status = -1;
         }
     });
-    return isKey;
+    return status;
+}
+
+// ------------------------------------------------------------------
+// 遮挡状态自愈：偶发“列表区域变空白”的兜底。
+//
+// 依据（实测）：诊断日志里出现过 isVisible=YES 却 occlusionState 缺少
+// NSWindowOcclusionStateVisible 的矛盾状态。WebKit 依据遮挡状态决定是否绘制，
+// 状态错乱时列表内容不被重绘。
+//
+// 处理：监听遮挡状态变化，发现“可见但被判为遮挡”且窗口是 key（用户正在使用）
+// 时，延迟 0.5s 复查，仍未恢复则 orderFront 一次，强制 AppKit 重新评估遮挡。
+// 非 key 不处理（用户在别的应用里，被盖住是正常的，自动前置会打扰）。
+// ------------------------------------------------------------------
+static void install_occlusion_watch(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserverForName:NSWindowDidChangeOcclusionStateNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(NSNotification *n) {
+            NSWindow *win = find_window(@"GoPaste");
+            if (win == nil || n.object != win) return;
+            if (![win isVisible]) return;
+            if ([win occlusionState] & NSWindowOcclusionStateVisible) return;
+            if (![win isKeyWindow]) {
+                NSLog(@"gopaste: [diag] occlusion missing Visible while panel visible (not key, skip self-heal)");
+                return;
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (![win isVisible]) return;
+                if ([win occlusionState] & NSWindowOcclusionStateVisible) return;
+                NSLog(@"gopaste: [diag] panel visible but occluded while key for 0.5s, forcing orderFront to resume painting");
+                [win orderFront:nil];
+            });
+        }];
+    });
+}
+
+// ------------------------------------------------------------------
+// 让网页内容接受“首次点击”（点击穿透）。
+//
+// 问题（已在 minrepro 最小复现里确认）：当窗口不是 key window 时，macOS 默认
+// 只把第一次点击用来激活窗口，不派发给内容 —— 用户看到“第一次点击没反应，
+// 要点第二次”。AppKit 会先问命中视图的 acceptsFirstMouse:，
+// 而 WKWebView 对网页内容默认返回 NO。
+//
+// 修复：用 class_replaceMethod 把 WKWebView 的 acceptsFirstMouse: 换成返回 YES。
+//   - 只作用于 WKWebView 这个类，不会改到父类 NSView；
+//   - 不改变面板的非激活语义：点击仍然只是让面板成为 key window，
+//     不会 activateIgnoringOtherApps:，粘贴的 Cmd+V 依旧落到原应用。
+// 同类做法：Electron 的 acceptFirstMouse 选项。
+// ------------------------------------------------------------------
+static BOOL gopaste_acceptsFirstMouse(id self, SEL _cmd, NSEvent *event) {
+    return YES;
+}
+
+static void install_first_mouse(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = [WKWebView class];
+        SEL sel = @selector(acceptsFirstMouse:);
+        Method m = class_getInstanceMethod(cls, sel);
+        class_replaceMethod(cls, sel, (IMP)gopaste_acceptsFirstMouse,
+                            m ? method_getTypeEncoding(m) : "c@:@");
+    });
 }
 
 // 弹出系统对话框前临时激活 GoPaste。
-// NonactivatingPanel 不是 active app，SaveFileDialog / OpenFileDialog 等
-// NSSavePanel 需要 active app 才能正常显示并接收输入。
-// 使用同步调用确保激活完成后再返回，调用方才能弹出对话框。
 void GoPasteActivateForDialog(void) {
     run_on_main_sync(^{
         [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
@@ -271,12 +201,11 @@ void GoPasteDeactivateAfterDialog(void) {
 }
 
 // GoPasteSaveFileDialog 在主线程内原子执行：激活 → NSSavePanel → 恢复。
-// 避免 Wails SaveFileDialog 跨线程 dispatch 导致激活状态在弹框前丢失。
+// allowedExt 为不带点的扩展名（如 "json" / "zip" / "png"），为空则不限制类型。
 // 返回用户选择的路径（C 字符串，调用方需 free），取消返回 NULL。
-char *GoPasteSaveFileDialog(const char *title, const char *defaultName) {
+char *GoPasteSaveFileDialog(const char *title, const char *defaultName, const char *allowedExt) {
     __block char *result = NULL;
     run_on_main_sync(^{
-        // 激活应用，让 NSSavePanel 能正常显示
         [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
 
         NSSavePanel *panel = [NSSavePanel savePanel];
@@ -286,14 +215,19 @@ char *GoPasteSaveFileDialog(const char *title, const char *defaultName) {
         if (defaultName) {
             panel.nameFieldStringValue = [NSString stringWithUTF8String:defaultName];
         }
-        // 限制文件类型
-        if (@available(macOS 11.0, *)) {
-            panel.allowedContentTypes = @[UTTypeJSON];
-        } else {
+        if (allowedExt && strlen(allowedExt) > 0) {
+            NSString *ext = [NSString stringWithUTF8String:allowedExt];
+            if (@available(macOS 11.0, *)) {
+                UTType *type = [UTType typeWithFilenameExtension:ext];
+                if (type) {
+                    panel.allowedContentTypes = @[type];
+                }
+            } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            panel.allowedFileTypes = @[@"json"];
+                panel.allowedFileTypes = @[ext];
 #pragma clang diagnostic pop
+            }
         }
         panel.canCreateDirectories = YES;
 
